@@ -60,8 +60,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": ""
+        "projectId": "9250772c-fda5-4d89-9255-a79c13daefd5"
       }
-    }
+    },
+    "owner": "josephfitz7"
   }
 }
