@@ -18,6 +18,7 @@
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to use speech recognition.",
         "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone.",
+        "NSPhotoLibraryUsageDescription": "Speak the Word may access your photo library only when you choose an image (for example, to attach or share content).",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
