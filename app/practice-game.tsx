@@ -1,10 +1,10 @@
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
+import { useHeaderHeight } from "@react-navigation/elements";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
-  TouchableOpacity,
   Pressable,
   StyleSheet,
   ScrollView,
@@ -15,16 +15,22 @@ import {
   Easing,
   Dimensions,
   Modal,
+  KeyboardAvoidingView,
+  Keyboard,
+  Platform,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import ConfettiCannon from "react-native-confetti-cannon";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColors, type ThemeColors } from "../constants/theme";
 import {
   getVerseById,
   getNextGameVerse,
   markVerseCompleted,
   updateVerseScore,
-  getCompletionDates,
+  getStreakActionDates,
   getStreakStats,
+  recordUserAction,
 } from "../database/queries";
 import speechWrapper from "../lib/speechRecognitionWrapper";
 import { computeAccuracy, type AccuracyResult } from "../utils/accuracy";
@@ -45,7 +51,7 @@ function getTodayDateString(): string {
 async function checkNewStreakDay(
   mark: () => Promise<unknown>
 ): Promise<{ currentStreak: number } | null> {
-  const dates = await getCompletionDates();
+  const dates = await getStreakActionDates();
   const hadToday = dates.includes(getTodayDateString());
   await mark();
   if (hadToday) return null;
@@ -63,7 +69,10 @@ export default function PracticeGameScreen() {
   }>();
   const router = useRouter();
   const navigation = useNavigation();
+  const headerHeight = useHeaderHeight();
   const { verseId, mode, verseIds, currentIndex, source } = params;
+  /** Preserved when chaining Next so deep links can prefer type if we add it later. */
+  const navigationMode = mode === "type" ? "type" : "speech";
   const isVotd = source === "votd";
   const colors = useThemeColors();
   const verseIdsList = verseIds ? verseIds.split(",").filter(Boolean) : [];
@@ -79,9 +88,7 @@ export default function PracticeGameScreen() {
   const [loading, setLoading] = useState(true);
   const [score, setScore] = useState<AccuracyResult | null>(null);
   const [whatYouSaid, setWhatYouSaid] = useState("");
-  const [typed, setTyped] = useState("");
   const [hintCount, setHintCount] = useState(0);
-  const [effectiveMode, setEffectiveMode] = useState<"speech" | "type">("speech");
   const [streakCongrats, setStreakCongrats] = useState<{ currentStreak: number } | null>(null);
   const startTime = useRef<number>(0);
   const contentOpacity = useRef(new Animated.Value(1)).current;
@@ -90,6 +97,22 @@ export default function PracticeGameScreen() {
   const reviewCardOpacity = useRef(new Animated.Value(0)).current;
 
   const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
+  /** Android: lift bottom composer above keyboard (resize often fails with stack + edge-to-edge). */
+  const [androidKeyboardInset, setAndroidKeyboardInset] = useState(0);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const showSub = Keyboard.addListener("keyboardDidShow", (e) => {
+      setAndroidKeyboardInset(e.endCoordinates.height);
+    });
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => {
+      setAndroidKeyboardInset(0);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const words = useMemo(() => (verse ? getWords(verse.text) : []), [verse]);
   const hintText = hintCount > 0 ? words.slice(0, hintCount).join(" ") : "";
@@ -137,14 +160,10 @@ export default function PracticeGameScreen() {
     } else {
       getVerseById(verseId).then((v) => {
         setVerse(v);
-        if (isVotd && v) {
-          setPhase("recite");
-          startTime.current = Date.now();
-        }
         setLoading(false);
       });
     }
-  }, [verseId, verseIdsList.join(","), buildCombinedVerse, isVotd]);
+  }, [verseId, verseIdsList.join(","), buildCombinedVerse]);
 
   useEffect(() => {
     if (isVotd) {
@@ -220,32 +239,6 @@ export default function PracticeGameScreen() {
     setSelectedRangeIndex(null);
   }, [rangeVerses, buildCombinedVerse]);
 
-  const handleCheckType = useCallback(() => {
-    if (!verse) return;
-    const result = computeAccuracy(verse.text, typed);
-    setWhatYouSaid(typed.trim());
-    setScore(result);
-    setPhase("result");
-    const elapsed = Math.round((Date.now() - startTime.current) / 1000);
-    if (result.percent >= 80) {
-      const doMark = () =>
-        practiceEntireRange && rangeVerses?.length
-          ? Promise.all(rangeVerses.map((v) => markVerseCompleted(v.id, elapsed, result.percent)))
-          : markVerseCompleted(verse.id, elapsed, result.percent);
-      checkNewStreakDay(doMark).then((streak) => {
-        if (streak) setStreakCongrats(streak);
-      });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    } else {
-      if (practiceEntireRange && rangeVerses?.length) {
-        rangeVerses.forEach((v) => updateVerseScore(v.id, result.percent).catch(() => {}));
-      } else {
-        updateVerseScore(verse.id, result.percent).catch(() => {});
-      }
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-    }
-  }, [verse, typed, practiceEntireRange, rangeVerses]);
-
   const handleNext = useCallback(async () => {
     if (practiceEntireRange) {
       router.back();
@@ -258,7 +251,7 @@ export default function PracticeGameScreen() {
         const nextId = verseIdsList[idx + 1];
         router.replace({
           pathname: "/practice-game",
-          params: { verseId: nextId, mode: effectiveMode, verseIds, currentIndex: String(idx + 1) },
+          params: { verseId: nextId, mode: navigationMode, verseIds, currentIndex: String(idx + 1) },
         });
       } else {
         router.back();
@@ -271,7 +264,7 @@ export default function PracticeGameScreen() {
       if (v) {
         router.replace({
           pathname: "/practice-game",
-          params: { verseId: v.id, mode: effectiveMode },
+          params: { verseId: v.id, mode: navigationMode },
         });
       } else {
         router.back();
@@ -279,7 +272,62 @@ export default function PracticeGameScreen() {
     } else {
       router.back();
     }
-  }, [verse, verseIdsList, currentIdx, selectedRangeIndex, verseIds, effectiveMode, practiceEntireRange, router]);
+  }, [verse, verseIdsList, currentIdx, selectedRangeIndex, verseIds, navigationMode, practiceEntireRange, router]);
+
+  const handleSpeechResult = useCallback(
+    (s: AccuracyResult, transcript: string, inputMode: "speech" | "type") => {
+      if (!verse) return;
+      setWhatYouSaid(transcript);
+      setScore(s);
+      setPhase("result");
+      const elapsed = Math.round((Date.now() - startTime.current) / 1000);
+      const passed = s.percent >= 80;
+      const actionVerseIds =
+        practiceEntireRange && rangeVerses?.length ? rangeVerses.map((v) => v.id) : [verse.id];
+      const metadata = {
+        reference: verse.reference,
+        source: isVotd ? "votd" : verseIdsList.length > 0 ? "challenge" : "level",
+        practiceEntireRange,
+      };
+      const recordAttempt = async () => {
+        for (const id of actionVerseIds) {
+          await recordUserAction({ actionType: "attempted_verse", verseId: id, scorePercent: s.percent, metadata });
+          await recordUserAction({
+            actionType: inputMode === "speech" ? "spoke_verse" : "wrote_verse",
+            verseId: id,
+            scorePercent: s.percent,
+            metadata,
+          });
+          if (passed) {
+            await recordUserAction({ actionType: "completed_verse", verseId: id, scorePercent: s.percent, metadata });
+          }
+          if (s.percent === 100) {
+            await recordUserAction({ actionType: "perfect_score", verseId: id, scorePercent: s.percent, metadata });
+          }
+        }
+        if (passed) {
+          if (practiceEntireRange && rangeVerses?.length) {
+            await Promise.all(rangeVerses.map((v) => markVerseCompleted(v.id, elapsed, s.percent)));
+          } else {
+            await markVerseCompleted(verse.id, elapsed, s.percent);
+          }
+        } else if (practiceEntireRange && rangeVerses?.length) {
+          await Promise.all(rangeVerses.map((v) => updateVerseScore(v.id, s.percent)));
+        } else {
+          await updateVerseScore(verse.id, s.percent);
+        }
+      };
+      checkNewStreakDay(recordAttempt).then((streak) => {
+        if (streak) setStreakCongrats(streak);
+      });
+      if (passed) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+      }
+    },
+    [verse, practiceEntireRange, rangeVerses, isVotd, verseIdsList.length]
+  );
 
   if (loading || !verse) {
     return (
@@ -289,17 +337,23 @@ export default function PracticeGameScreen() {
     );
   }
 
-  const isSpeech = effectiveMode === "speech";
   const showConfetti = phase === "result" && score !== null && score.percent >= 80;
 
   return (
+    <KeyboardAvoidingView
+      style={styles.keyboardAvoid}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardVerticalOffset={Platform.OS === "ios" ? headerHeight : 0}
+    >
     <View style={[styles.container, { backgroundColor: colors.background, flex: 1 }]}>
-    <ScrollView style={styles.scrollInner} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.scrollInner}
+      contentContainerStyle={[styles.content, phase === "recite" && styles.contentRecitePad]}
+      keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
+    >
       <Animated.View style={{ opacity: contentOpacity }}>
       <Text style={[styles.ref, { color: colors.primary }]}>{verse.reference}</Text>
-      {phase === "recite" && isVotd && (
-        <Text style={[styles.verseText, { color: colors.textSecondary }]}>{verse.text}</Text>
-      )}
       {phase === "memorize" && (
         <>
           <Text style={[styles.verseText, { color: colors.textSecondary }]}>{verse.text}</Text>
@@ -355,34 +409,8 @@ export default function PracticeGameScreen() {
       </Modal>
       {phase === "recite" && (
         <>
-          <View style={styles.reciteModeRow}>
-            <Pressable
-              style={({ pressed }) => [
-                styles.reciteModeBtn,
-                effectiveMode === "speech" && styles.reciteModeBtnActive,
-                { transform: [{ scale: pressed ? 0.97 : 1 }] },
-              ]}
-              onPress={() => setEffectiveMode("speech")}
-            >
-              <Text style={[styles.reciteModeBtnText, effectiveMode === "speech" && styles.reciteModeBtnTextActive]}>
-                Speak
-              </Text>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [
-                styles.reciteModeBtn,
-                effectiveMode === "type" && styles.reciteModeBtnActive,
-                { transform: [{ scale: pressed ? 0.97 : 1 }] },
-              ]}
-              onPress={() => setEffectiveMode("type")}
-            >
-              <Text style={[styles.reciteModeBtnText, effectiveMode === "type" && styles.reciteModeBtnTextActive]}>
-                Type
-              </Text>
-            </Pressable>
-          </View>
           <Text style={styles.reciteHint}>
-            {isSpeech ? "Tap Start, then recite. Tap Stop, edit if needed, then Submit." : "Type the verse from memory."}
+            Type in the bar below, or tap the mic to dictate—then tap Check when you are ready.
           </Text>
           <Pressable
             style={({ pressed }) => [styles.hintBtn, !canHint && styles.hintBtnDisabled, { opacity: canHint && pressed ? 0.8 : 1 }]}
@@ -399,53 +427,13 @@ export default function PracticeGameScreen() {
               <Text style={styles.hintReveal}>{hintText}</Text>
             </View>
           )}
-          {isSpeech ? (
-            <SpeechBlock
-              verse={verse}
-              onResult={(s, transcript) => {
-                setWhatYouSaid(transcript);
-                setScore(s);
-                setPhase("result");
-                const elapsed = Math.round((Date.now() - startTime.current) / 1000);
-                if (s.percent >= 80) {
-                  const doMark = () =>
-                    practiceEntireRange && rangeVerses?.length
-                      ? Promise.all(rangeVerses.map((v) => markVerseCompleted(v.id, elapsed, s.percent)))
-                      : markVerseCompleted(verse.id, elapsed, s.percent);
-                  checkNewStreakDay(doMark).then((streak) => {
-                    if (streak) setStreakCongrats(streak);
-                  });
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-                } else {
-                  if (practiceEntireRange && rangeVerses?.length) {
-                    rangeVerses.forEach((v) => updateVerseScore(v.id, s.percent).catch(() => {}));
-                  } else {
-                    updateVerseScore(verse.id, s.percent).catch(() => {});
-                  }
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
-                }
-              }}
-            />
-          ) : (
-            <>
-              <TextInput
-                style={styles.input}
-                placeholder="Type the verse..."
-                placeholderTextColor="#94a3b8"
-                multiline
-                value={typed}
-                onChangeText={setTyped}
-                spellCheck={false}
-                autoCorrect={false}
-              />
-              <Pressable
-                style={({ pressed }) => [styles.primaryBtn, { backgroundColor: colors.primary, transform: [{ scale: pressed ? 0.96 : 1 }] }]}
-                onPress={handleCheckType}
-              >
-                <Text style={styles.primaryBtnText}>Check</Text>
-              </Pressable>
-            </>
-          )}
+          {!speechWrapper.available ? (
+            <View style={[styles.unsupported, { marginBottom: 16 }]}>
+              <Text style={styles.unsupportedText}>
+                Voice input is not available in Expo Go. Use a development build, or type your answer below.
+              </Text>
+            </View>
+          ) : null}
         </>
       )}
       {phase === "result" && score !== null && verse && (
@@ -494,26 +482,47 @@ export default function PracticeGameScreen() {
                 setPhase("memorize");
                 setScore(null);
                 setWhatYouSaid("");
-                setTyped("");
                 setHintCount(0);
               }}
             >
-              <Text style={styles.retryBtnText}>Retry</Text>
+              <Text style={styles.retryBtnText}>{score.percent >= 80 ? "Retry" : "Try again"}</Text>
             </Pressable>
+            {score.percent >= 80 ? (
+              <Pressable
+                style={({ pressed }) => [styles.primaryBtn, { backgroundColor: colors.primary, transform: [{ scale: pressed ? 0.96 : 1 }] }]}
+                onPress={handleNext}
+              >
+                <Text style={styles.primaryBtnText}>Next</Text>
+              </Pressable>
+            ) : null}
             <Pressable
-              style={({ pressed }) => [styles.primaryBtn, { backgroundColor: colors.primary, transform: [{ scale: pressed ? 0.96 : 1 }] }]}
-              onPress={handleNext}
+              style={({ pressed }) => [styles.quitBtn, { opacity: pressed ? 0.7 : 1 }]}
+              onPress={() => router.back()}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel"
             >
-              <Text style={styles.primaryBtnText}>Next</Text>
-            </Pressable>
-            <Pressable style={({ pressed }) => [styles.quitBtn, { opacity: pressed ? 0.7 : 1 }]} onPress={() => router.back()}>
-              <Text style={styles.quitBtnText}>Quit</Text>
+              <Text style={styles.quitBtnText}>Cancel</Text>
             </Pressable>
           </View>
         </>
       )}
       </Animated.View>
     </ScrollView>
+    {phase === "recite" && (
+      <View
+        style={
+          Platform.OS === "android" && androidKeyboardInset > 0
+            ? { marginBottom: androidKeyboardInset }
+            : undefined
+        }
+      >
+        {speechWrapper.available ? (
+          <ReciteComposerWithSpeech key={verse.id} verse={verse} onResult={handleSpeechResult} colors={colors} />
+        ) : (
+          <ReciteComposerTypeOnly key={verse.id} verse={verse} onResult={handleSpeechResult} colors={colors} />
+        )}
+      </View>
+    )}
     {showConfetti && (
       <View style={styles.confettiOverlay} pointerEvents="none">
         <ConfettiCannon
@@ -551,16 +560,85 @@ export default function PracticeGameScreen() {
       </View>
     </Modal>
     </View>
+    </KeyboardAvoidingView>
   );
 }
 
-function SpeechBlock({
+function ReciteComposerTypeOnly({
   verse,
   onResult,
+  colors,
 }: {
   verse: GameVerse;
-  onResult: (score: AccuracyResult, transcript: string) => void;
+  onResult: (score: AccuracyResult, transcript: string, inputMode: "speech" | "type") => void;
+  colors: ThemeColors;
 }) {
+  const insets = useSafeAreaInsets();
+  const [text, setText] = useState("");
+  const canCheck = text.trim().length > 0;
+  const submit = () => {
+    const t = text.trim();
+    onResult(computeAccuracy(verse.text, t), t, "type");
+  };
+  return (
+    <View
+      style={[
+        styles.composerBar,
+        {
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
+          paddingBottom: Math.max(insets.bottom, 10),
+        },
+      ]}
+    >
+      <View style={styles.composerRow}>
+        <TextInput
+          style={[
+            styles.composerInput,
+            {
+              backgroundColor: colors.inputBg,
+              borderColor: colors.inputBorder,
+              color: colors.text,
+            },
+          ]}
+          placeholder="Type the verse…"
+          placeholderTextColor={colors.textMuted}
+          value={text}
+          onChangeText={setText}
+          multiline
+          spellCheck={false}
+          autoCorrect={false}
+        />
+        <Pressable
+          onPress={submit}
+          disabled={!canCheck}
+          style={({ pressed }) => [
+            styles.composerIconBtn,
+            {
+              backgroundColor: colors.primary,
+              opacity: !canCheck ? colors.disabledOpacity : pressed ? 0.9 : 1,
+            },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Check answer"
+        >
+          <Ionicons name="checkmark" size={24} color={colors.primaryText} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function ReciteComposerWithSpeech({
+  verse,
+  onResult,
+  colors,
+}: {
+  verse: GameVerse;
+  onResult: (score: AccuracyResult, transcript: string, inputMode: "speech" | "type") => void;
+  colors: ThemeColors;
+}) {
+  const insets = useSafeAreaInsets();
   const [transcript, setTranscript] = useState("");
   const [editableTranscript, setEditableTranscript] = useState("");
   const [reviewMode, setReviewMode] = useState(false);
@@ -571,19 +649,12 @@ function SpeechBlock({
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseActive = useRef(false);
 
-  if (!speechWrapper.available) {
-    return (
-      <View style={styles.unsupported}>
-        <Text style={styles.unsupportedText}>Speech not available in Expo Go. Use a development build or switch to Type mode.</Text>
-      </View>
-    );
-  }
-
   const speech = speechWrapper.module!;
   const { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } = speech;
 
   useSpeechRecognitionEvent("start", () => {
     transcriptRef.current = "";
+    setReviewMode(false);
     setListening(true);
     setStatus("Listening...");
     pulseActive.current = true;
@@ -646,6 +717,8 @@ function SpeechBlock({
   const handleStart = useCallback(async () => {
     if (permissionGranted === false) return;
     if (permissionGranted !== true && !(await requestPermissions())) return;
+    setReviewMode(false);
+    setEditableTranscript("");
     setTranscript("");
     setStatus("Starting...");
     try {
@@ -666,10 +739,10 @@ function SpeechBlock({
   }, []);
 
   const handleSubmit = useCallback(() => {
-    const text = editableTranscript.trim();
+    const text = (reviewMode ? editableTranscript : transcript).trim();
     const result = computeAccuracy(verse.text, text);
-    onResult(result, text);
-  }, [verse, editableTranscript, onResult]);
+    onResult(result, text, "speech");
+  }, [verse, reviewMode, editableTranscript, transcript, onResult]);
 
   const handleRecordAgain = useCallback(() => {
     setReviewMode(false);
@@ -679,56 +752,137 @@ function SpeechBlock({
     setStatus("Ready");
   }, []);
 
-  if (reviewMode) {
-    return (
-      <>
-        <Text style={styles.reviewLabel}>Edit if needed, then submit</Text>
+  const displayText = reviewMode ? editableTranscript : transcript;
+  const onChangeComposerText = (t: string) => {
+    if (reviewMode) setEditableTranscript(t);
+    else setTranscript(t);
+  };
+
+  const onMicPress = useCallback(() => {
+    if (reviewMode) {
+      handleRecordAgain();
+      return;
+    }
+    if (isListening) handleStop();
+    else void handleStart();
+  }, [reviewMode, isListening, handleRecordAgain, handleStop, handleStart]);
+
+  const canCheckSpeech =
+    !isListening && (reviewMode ? editableTranscript : transcript).trim().length > 0;
+  const placeholder = isListening
+    ? "Listening…"
+    : reviewMode
+      ? "Edit if needed…"
+      : "Tap the mic to speak, or type here";
+
+  return (
+    <View
+      style={[
+        styles.composerBar,
+        {
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
+          paddingBottom: Math.max(insets.bottom, 10),
+        },
+      ]}
+    >
+      {status !== "Ready" && status !== "Stopped" ? (
+        <Text style={[styles.composerStatus, { color: colors.textMuted }]}>{status}</Text>
+      ) : null}
+      <View style={styles.composerRow}>
         <TextInput
-          style={styles.input}
-          placeholder="What you said (edit recognition if wrong)..."
-          placeholderTextColor="#94a3b8"
+          style={[
+            styles.composerInput,
+            {
+              backgroundColor: colors.inputBg,
+              borderColor: colors.inputBorder,
+              color: colors.text,
+            },
+          ]}
+          placeholder={placeholder}
+          placeholderTextColor={colors.textMuted}
+          value={displayText}
+          onChangeText={onChangeComposerText}
           multiline
-          value={editableTranscript}
-          onChangeText={setEditableTranscript}
+          editable={!isListening}
           spellCheck={false}
           autoCorrect={false}
         />
-        <Pressable style={({ pressed }) => [styles.primaryBtn, { transform: [{ scale: pressed ? 0.96 : 1 }] }]} onPress={handleSubmit}>
-          <Text style={styles.primaryBtnText}>Submit</Text>
-        </Pressable>
-        <Pressable style={({ pressed }) => [styles.secondaryBtn, { opacity: pressed ? 0.7 : 1 }]} onPress={handleRecordAgain}>
-          <Text style={styles.secondaryBtnText}>Record again</Text>
-        </Pressable>
-      </>
-    );
-  }
-
-  return (
-    <>
-      <ScrollView style={styles.transcriptBox}>
-        <Text style={styles.transcriptText}>{transcript || " (your words will appear here)"}</Text>
-      </ScrollView>
-      <Text style={styles.statusText}>{status}</Text>
-      <Animated.View style={isListening ? { transform: [{ scale: pulseAnim }] } : undefined}>
         <Pressable
+          onPress={handleSubmit}
+          disabled={!canCheckSpeech}
           style={({ pressed }) => [
-            styles.btn,
-            isListening ? styles.stopBtn : styles.startBtn,
-            { transform: [{ scale: pressed ? 0.96 : 1 }] },
+            styles.composerIconBtn,
+            {
+              backgroundColor: colors.primary,
+              opacity: !canCheckSpeech ? colors.disabledOpacity : pressed ? 0.9 : 1,
+            },
           ]}
-          onPress={isListening ? handleStop : handleStart}
+          accessibilityRole="button"
+          accessibilityLabel="Check answer"
         >
-          <Text style={styles.btnText}>{isListening ? "Stop" : "Start"}</Text>
+          <Ionicons name="checkmark" size={24} color={colors.primaryText} />
         </Pressable>
-      </Animated.View>
-    </>
+        <Animated.View style={isListening ? { transform: [{ scale: pulseAnim }] } : undefined}>
+          <Pressable
+            onPress={onMicPress}
+            style={({ pressed }) => [
+              styles.composerMicBtn,
+              {
+                backgroundColor: isListening ? colors.error : colors.primary,
+                opacity: pressed ? 0.9 : 1,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={reviewMode ? "Record again" : isListening ? "Stop recording" : "Start recording"}
+          >
+            <Ionicons name={isListening ? "stop" : "mic"} size={22} color={colors.primaryText} />
+          </Pressable>
+        </Animated.View>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  keyboardAvoid: { flex: 1 },
   container: { flex: 1, backgroundColor: "#f8fafc" },
   scrollInner: { flex: 1 },
   content: { padding: 24 },
+  contentRecitePad: { paddingBottom: 120 },
+  composerBar: {
+    borderTopWidth: 1,
+    paddingTop: 10,
+    paddingHorizontal: 16,
+  },
+  composerStatus: { fontSize: 12, marginBottom: 6 },
+  composerRow: { flexDirection: "row", alignItems: "flex-end", gap: 10 },
+  composerInput: {
+    flex: 1,
+    minHeight: 44,
+    maxHeight: 120,
+    borderWidth: 1,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === "ios" ? 10 : 8,
+    fontSize: 16,
+    textAlignVertical: "top",
+  },
+  composerIconBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 0,
+  },
+  composerMicBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   confettiOverlay: { ...StyleSheet.absoluteFillObject },
   streakModalBackdrop: {
     flex: 1,
@@ -776,11 +930,6 @@ const styles = StyleSheet.create({
   verseText: { fontSize: 16, color: "#334155", lineHeight: 24, marginBottom: 24 },
   rangeModeBtn: { paddingVertical: 14, borderRadius: 10, alignItems: "center", marginBottom: 12, backgroundColor: "#f0fdf4", borderWidth: 1, borderColor: "#bbf7d0" },
   rangeModeBtnText: { fontSize: 15, fontWeight: "600", color: "#15803d" },
-  reciteModeRow: { flexDirection: "row", gap: 10, marginBottom: 14 },
-  reciteModeBtn: { flex: 1, paddingVertical: 12, borderRadius: 10, alignItems: "center", backgroundColor: "#e2e8f0" },
-  reciteModeBtnActive: { backgroundColor: "#2563eb" },
-  reciteModeBtnText: { fontSize: 15, fontWeight: "600", color: "#475569" },
-  reciteModeBtnTextActive: { color: "#fff" },
   reciteHint: { fontSize: 14, color: "#64748b", marginBottom: 12 },
   hintBtn: {
     alignSelf: "flex-start",
@@ -802,7 +951,6 @@ const styles = StyleSheet.create({
   },
   hintLabel: { fontSize: 12, color: "#64748b", marginBottom: 4 },
   hintReveal: { fontSize: 15, color: "#334155", fontStyle: "italic" },
-  reviewLabel: { fontSize: 14, color: "#64748b", marginBottom: 8 },
   reviewCard: {
     backgroundColor: "#fff",
     borderRadius: 14,
@@ -855,13 +1003,4 @@ const styles = StyleSheet.create({
   quitBtnText: { fontSize: 16, color: "#64748b" },
   unsupported: { padding: 16, backgroundColor: "#fef3c7", borderRadius: 10, marginBottom: 16 },
   unsupportedText: { fontSize: 14, color: "#78350f" },
-  transcriptBox: { maxHeight: 120, backgroundColor: "#fff", borderRadius: 10, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: "#e2e8f0" },
-  transcriptText: { fontSize: 15, color: "#334155" },
-  statusText: { fontSize: 14, color: "#64748b", marginBottom: 12 },
-  buttonRow: { flexDirection: "row", gap: 12 },
-  btn: { flex: 1, paddingVertical: 14, borderRadius: 10, alignItems: "center" },
-  startBtn: { backgroundColor: "#2563eb" },
-  stopBtn: { backgroundColor: "#dc2626" },
-  btnDisabled: { opacity: 0.5 },
-  btnText: { fontSize: 16, fontWeight: "600", color: "#fff" },
 });

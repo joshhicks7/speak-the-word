@@ -1,6 +1,52 @@
 import { GameVerse } from "../types/verse";
 import { getDatabase, rowToGameVerse } from "./setup";
 
+export type UserActionType =
+  | "attempted_verse"
+  | "spoke_verse"
+  | "wrote_verse"
+  | "completed_verse"
+  | "perfect_score";
+
+export type RecordUserActionInput = {
+  actionType: UserActionType;
+  verseId?: string;
+  scorePercent?: number;
+  metadata?: Record<string, unknown>;
+};
+
+function getUnixSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function getLocalDateString(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function makeUserActionId(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export const recordUserAction = async ({
+  actionType,
+  verseId,
+  scorePercent,
+  metadata,
+}: RecordUserActionInput): Promise<void> => {
+  const db = await getDatabase();
+  await db.runAsync(
+    "INSERT INTO user_actions (id, action_type, verse_id, score_percent, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+    [
+      makeUserActionId(),
+      actionType,
+      verseId ?? null,
+      scorePercent ?? null,
+      getUnixSeconds(),
+      metadata ? JSON.stringify(metadata) : null,
+    ]
+  );
+};
+
 export const getVerseById = async (id: string): Promise<GameVerse | null> => {
   const db = await getDatabase();
   const result = await db.getFirstAsync("SELECT * FROM verses WHERE id = ?", [id]);
@@ -26,7 +72,7 @@ export const getFavoriteVerses = async (): Promise<GameVerse[]> => {
 export const getNextUncompletedVerse = async (): Promise<GameVerse | null> => {
   const db = await getDatabase();
   const result = await db.getFirstAsync(
-    "SELECT * FROM verses WHERE completion_time IS NULL ORDER BY length(text), book, chapter, verse LIMIT 1"
+    "SELECT * FROM verses WHERE completed_at IS NULL ORDER BY length(text), book, chapter, verse LIMIT 1"
   );
   return result ? rowToGameVerse(result as Record<string, unknown>) : null;
 };
@@ -34,7 +80,7 @@ export const getNextUncompletedVerse = async (): Promise<GameVerse | null> => {
 export const getUncompletedVersesOrdered = async (limit: number = 50): Promise<GameVerse[]> => {
   const db = await getDatabase();
   const result = await db.getAllAsync(
-    "SELECT * FROM verses WHERE completion_time IS NULL ORDER BY length(text), book, chapter, verse LIMIT ?",
+    "SELECT * FROM verses WHERE completed_at IS NULL ORDER BY length(text), book, chapter, verse LIMIT ?",
     [limit]
   );
   return result.map((r) => rowToGameVerse(r as Record<string, unknown>));
@@ -43,7 +89,7 @@ export const getUncompletedVersesOrdered = async (limit: number = 50): Promise<G
 export const getCompletedVersesOrdered = async (limit: number = 100): Promise<GameVerse[]> => {
   const db = await getDatabase();
   const result = await db.getAllAsync(
-    "SELECT * FROM verses WHERE completion_time IS NOT NULL ORDER BY length(text), book, chapter, verse LIMIT ?",
+    "SELECT * FROM verses WHERE completed_at IS NOT NULL ORDER BY length(text), book, chapter, verse LIMIT ?",
     [limit]
   );
   return result.map((r) => rowToGameVerse(r as Record<string, unknown>));
@@ -51,13 +97,13 @@ export const getCompletedVersesOrdered = async (limit: number = 100): Promise<Ga
 
 export const markVerseCompleted = async (
   id: string,
-  completionTime: number,
+  completionDurationSeconds: number,
   scorePercent: number
 ): Promise<void> => {
   const db = await getDatabase();
   await db.runAsync(
-    "UPDATE verses SET completion_time = ?, completion_score = ? WHERE id = ?",
-    [completionTime, scorePercent, id]
+    "UPDATE verses SET completed_at = COALESCE(completed_at, ?), completion_duration_seconds = ?, completion_score = ? WHERE id = ?",
+    [getUnixSeconds(), completionDurationSeconds, scorePercent, id]
   );
 };
 
@@ -73,7 +119,7 @@ export const getCompletionStats = async (): Promise<{
 }> => {
   const db = await getDatabase();
   const result = await db.getFirstAsync<{ total: number; completed: number }>(
-    "SELECT COUNT(*) as total, SUM(CASE WHEN completion_time IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses"
+    "SELECT COUNT(*) as total, SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses"
   );
   return { total: result?.total ?? 0, completed: result?.completed ?? 0 };
 };
@@ -88,13 +134,13 @@ export const getLearningStats = async (): Promise<{
   const db = await getDatabase();
   const [countResult, mostBookResult, perfectResult] = await Promise.all([
     db.getFirstAsync<{ total: number; completed: number }>(
-      "SELECT COUNT(*) as total, SUM(CASE WHEN completion_time IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses"
+      "SELECT COUNT(*) as total, SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses"
     ),
     db.getFirstAsync<{ book_name: string }>(
-      "SELECT book_name FROM verses WHERE completion_time IS NOT NULL GROUP BY book ORDER BY COUNT(*) DESC LIMIT 1"
+      "SELECT book_name FROM verses WHERE completed_at IS NOT NULL GROUP BY book ORDER BY COUNT(*) DESC LIMIT 1"
     ),
     db.getFirstAsync<{ perfect: number }>(
-      "SELECT COUNT(*) as perfect FROM verses WHERE completion_time IS NOT NULL AND completion_score = 100"
+      "SELECT COUNT(*) as perfect FROM verses WHERE completed_at IS NOT NULL AND completion_score = 100"
     ),
   ]);
   const total = countResult?.total ?? 0;
@@ -109,37 +155,33 @@ export const getLearningStats = async (): Promise<{
   };
 };
 
-/** Get distinct completion dates (local YYYY-MM-DD) from completion_time timestamps. */
-export const getCompletionDates = async (): Promise<string[]> => {
+/** Get distinct action dates (local YYYY-MM-DD) for actions that count toward streaks. */
+export const getStreakActionDates = async (): Promise<string[]> => {
   const db = await getDatabase();
-  const rows = await db.getAllAsync<{ completion_time: number }>(
-    "SELECT DISTINCT completion_time FROM verses WHERE completion_time IS NOT NULL"
+  const rows = await db.getAllAsync<{ created_at: number }>(
+    "SELECT DISTINCT created_at FROM user_actions WHERE action_type = ?",
+    ["attempted_verse"]
   );
   const dates = new Set<string>();
   for (const row of rows) {
-    const d = new Date(row.completion_time * 1000);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    dates.add(`${yyyy}-${mm}-${dd}`);
+    dates.add(getLocalDateString(new Date(row.created_at * 1000)));
   }
   return Array.from(dates).sort();
 };
 
-/** Current streak = consecutive days with a completion ending today (or yesterday if today none). Longest = max consecutive days. */
+/** Current streak = consecutive days with an attempt ending today (or yesterday if today none). Longest = max consecutive days. */
 export const getStreakStats = async (): Promise<{ currentStreak: number; longestStreak: number }> => {
-  const dates = await getCompletionDates();
+  const dates = await getStreakActionDates();
   if (dates.length === 0) return { currentStreak: 0, longestStreak: 0 };
 
   const today = new Date();
-  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
   const dateSet = new Set(dates);
 
   let currentStreak = 0;
   const checkDate = new Date(today);
   for (let i = 0; i < 365; i++) {
-    const s = `${checkDate.getFullYear()}-${String(checkDate.getMonth() + 1).padStart(2, "0")}-${String(checkDate.getDate()).padStart(2, "0")}`;
+    const s = getLocalDateString(checkDate);
     if (dateSet.has(s)) {
       currentStreak++;
       checkDate.setDate(checkDate.getDate() - 1);
