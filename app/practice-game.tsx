@@ -31,6 +31,8 @@ import {
   getStreakActionDates,
   getStreakStats,
   recordUserAction,
+  toggleFavorite,
+  setFavorite,
 } from "../database/queries";
 import speechWrapper from "../lib/speechRecognitionWrapper";
 import { computeAccuracy, type AccuracyResult } from "../utils/accuracy";
@@ -74,7 +76,10 @@ export default function PracticeGameScreen() {
   /** Preserved when chaining Next so deep links can prefer type if we add it later. */
   const navigationMode = mode === "type" ? "type" : "speech";
   const isVotd = source === "votd";
+  const isIntro = source === "intro";
+  const passPercent = isIntro ? 75 : 80;
   const colors = useThemeColors();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const verseIdsList = verseIds ? verseIds.split(",").filter(Boolean) : [];
   const currentIdx = currentIndex != null ? parseInt(currentIndex, 10) : 0;
 
@@ -165,11 +170,30 @@ export default function PracticeGameScreen() {
     }
   }, [verseId, verseIdsList.join(","), buildCombinedVerse]);
 
+  const leaveIntroToHome = useCallback(() => {
+    router.replace("/(tabs)");
+  }, [router]);
+
   useEffect(() => {
     if (isVotd) {
       navigation.setOptions({ title: "Verse of the Day" });
+    } else if (isIntro) {
+      navigation.setOptions({
+        title: "Your first verse",
+        headerLeft: () => (
+          <Pressable
+            onPress={leaveIntroToHome}
+            hitSlop={12}
+            style={{ paddingHorizontal: 4, marginLeft: Platform.OS === "ios" ? 0 : 4 }}
+            accessibilityRole="button"
+            accessibilityLabel="Continue to home"
+          >
+            <Ionicons name="chevron-back" size={28} color={colors.text} />
+          </Pressable>
+        ),
+      });
     }
-  }, [isVotd, navigation]);
+  }, [isVotd, isIntro, navigation, leaveIntroToHome, colors.text]);
 
   useEffect(() => {
     if (phase === "result") {
@@ -239,7 +263,28 @@ export default function PracticeGameScreen() {
     setSelectedRangeIndex(null);
   }, [rangeVerses, buildCombinedVerse]);
 
+  const handleToggleFavorite = useCallback(async () => {
+    if (!verse) return;
+    if (practiceEntireRange && rangeVerses && rangeVerses.length > 1) {
+      const allFavorited = rangeVerses.every((v) => v.isFavorite);
+      const next = !allFavorited;
+      await Promise.all(rangeVerses.map((v) => setFavorite(v.id, next)));
+      const updatedRange = rangeVerses.map((v) => ({ ...v, isFavorite: next }));
+      setRangeVerses(updatedRange);
+      setVerse(buildCombinedVerse(updatedRange));
+      return;
+    }
+    const verseId = verse.id.includes(",") ? verse.id.split(",")[0] : verse.id;
+    await toggleFavorite(verseId);
+    const updated = await getVerseById(verseId);
+    if (updated) setVerse(updated);
+  }, [verse, practiceEntireRange, rangeVerses, buildCombinedVerse]);
+
   const handleNext = useCallback(async () => {
+    if (isIntro) {
+      leaveIntroToHome();
+      return;
+    }
     if (practiceEntireRange) {
       router.back();
       return;
@@ -272,7 +317,7 @@ export default function PracticeGameScreen() {
     } else {
       router.back();
     }
-  }, [verse, verseIdsList, currentIdx, selectedRangeIndex, verseIds, navigationMode, practiceEntireRange, router]);
+  }, [verse, verseIdsList, currentIdx, selectedRangeIndex, verseIds, navigationMode, practiceEntireRange, isIntro, leaveIntroToHome, router]);
 
   const handleSpeechResult = useCallback(
     (s: AccuracyResult, transcript: string, inputMode: "speech" | "type") => {
@@ -281,12 +326,12 @@ export default function PracticeGameScreen() {
       setScore(s);
       setPhase("result");
       const elapsed = Math.round((Date.now() - startTime.current) / 1000);
-      const passed = s.percent >= 80;
+      const passed = s.percent >= passPercent;
       const actionVerseIds =
         practiceEntireRange && rangeVerses?.length ? rangeVerses.map((v) => v.id) : [verse.id];
       const metadata = {
         reference: verse.reference,
-        source: isVotd ? "votd" : verseIdsList.length > 0 ? "challenge" : "level",
+        source: isVotd ? "votd" : isIntro ? "intro" : verseIdsList.length > 0 ? "challenge" : "level",
         practiceEntireRange,
       };
       const recordAttempt = async () => {
@@ -326,10 +371,10 @@ export default function PracticeGameScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       }
     },
-    [verse, practiceEntireRange, rangeVerses, isVotd, verseIdsList.length]
+    [verse, practiceEntireRange, rangeVerses, isVotd, isIntro, passPercent, verseIdsList.length]
   );
 
-  if (loading || !verse) {
+  if (loading) {
     return (
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -337,7 +382,28 @@ export default function PracticeGameScreen() {
     );
   }
 
-  const showConfetti = phase === "result" && score !== null && score.percent >= 80;
+  if (!verse) {
+    return (
+      <View style={[styles.centered, { backgroundColor: colors.background, padding: 24 }]}>
+        <Text style={{ fontSize: 16, color: colors.text, textAlign: "center", marginBottom: 16 }}>
+          This verse could not be loaded.
+        </Text>
+        <Pressable
+          onPress={() => (isIntro ? leaveIntroToHome() : router.back())}
+          style={[styles.primaryBtn, { backgroundColor: colors.primary }]}
+        >
+          <Text style={styles.primaryBtnText}>{isIntro ? "Continue to home" : "Go back"}</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  const passedThisRound = score !== null && score.percent >= passPercent;
+  const showConfetti = phase === "result" && passedThisRound;
+  const isFavorited =
+    practiceEntireRange && rangeVerses && rangeVerses.length > 1
+      ? rangeVerses.every((v) => v.isFavorite)
+      : verse.isFavorite;
 
   return (
     <KeyboardAvoidingView
@@ -353,15 +419,36 @@ export default function PracticeGameScreen() {
       keyboardDismissMode="on-drag"
     >
       <Animated.View style={{ opacity: contentOpacity }}>
-      <Text style={[styles.ref, { color: colors.primary }]}>{verse.reference}</Text>
+      {phase === "memorize" ? (
+        <View style={styles.memorizeHeaderRow}>
+          <Text style={[styles.ref, styles.refInRow, { color: colors.primary }]}>{verse.reference}</Text>
+          <Pressable
+            onPress={() => void handleToggleFavorite()}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            style={styles.favoriteBtn}
+            accessibilityRole="button"
+            accessibilityLabel={isFavorited ? "Remove from My Challenges" : "Save to My Challenges"}
+          >
+            <Ionicons
+              name={isFavorited ? "heart" : "heart-outline"}
+              size={28}
+              color={isFavorited ? colors.primary : colors.textMuted}
+            />
+          </Pressable>
+        </View>
+      ) : (
+        <Text style={[styles.ref, { color: colors.primary }]}>{verse.reference}</Text>
+      )}
       {phase === "memorize" && (
         <>
           <Text style={[styles.verseText, { color: colors.textSecondary }]}>{verse.text}</Text>
           <Pressable
             style={({ pressed }) => [styles.primaryBtn, { backgroundColor: colors.primary, transform: [{ scale: pressed ? 0.96 : 1 }] }]}
             onPress={handleReady}
+            accessibilityRole="button"
+            accessibilityLabel="Speak the Word"
           >
-            <Text style={styles.primaryBtnText}>Play</Text>
+            <Text style={styles.primaryBtnText}>Speak the Word</Text>
           </Pressable>
           {rangeVerses && rangeVerses.length > 1 && (
             <Pressable
@@ -370,8 +457,8 @@ export default function PracticeGameScreen() {
             >
               <Text style={styles.rangeModeBtnText}>
                 {practiceEntireRange
-                  ? "Practice verse by verse"
-                  : `Practice entire range (${rangeVerses.length} verses)`}
+                  ? "One verse at a time"
+                  : `Speak the whole passage (${rangeVerses.length} verses)`}
               </Text>
             </Pressable>
           )}
@@ -410,7 +497,7 @@ export default function PracticeGameScreen() {
       {phase === "recite" && (
         <>
           <Text style={styles.reciteHint}>
-            Type in the bar below, or tap the mic to dictate—then tap Check when you are ready.
+            Speak this verse. It's okay to use a hint.
           </Text>
           <Pressable
             style={({ pressed }) => [styles.hintBtn, !canHint && styles.hintBtnDisabled, { opacity: canHint && pressed ? 0.8 : 1 }]}
@@ -441,15 +528,19 @@ export default function PracticeGameScreen() {
           <Animated.View
             style={[
               styles.scoreCard,
-              score.percent >= 80 ? styles.scoreGood : score.percent >= 50 ? styles.scoreOkay : styles.scoreLow,
+              score.percent >= passPercent ? styles.scoreGood : score.percent >= 50 ? styles.scoreOkay : styles.scoreLow,
               { opacity: resultOpacity, transform: [{ scale: resultScale }] },
             ]}
           >
-            <Text style={[styles.resultLabel, score.percent >= 80 ? styles.resultLabelSuccess : styles.resultLabelFail]}>
-              {score.percent === 100 ? "Perfect!" : score.percent >= 80 ? "Completed" : "Failed"}
+            <Text style={[styles.resultLabel, score.percent >= passPercent ? styles.resultLabelSuccess : styles.resultLabelFail]}>
+              {score.percent === 100 ? "Perfect" : score.percent >= passPercent ? "Completed" : "Keep going"}
             </Text>
             <Text style={styles.scoreTitle}>
-              {score.percent === 100 ? "Flawless!" : score.percent >= 80 ? "Well done!" : score.percent >= 50 ? "Good try!" : "Keep practicing!"}
+              {score.percent === 100
+                ? "Well done."
+                : score.percent >= passPercent
+                  ? "Nice work."
+                  : "Try again. The Word is worth it."}
             </Text>
             <Text style={styles.scoreText}>{score.correct}/{score.total} words ({score.percent}%)</Text>
           </Animated.View>
@@ -459,7 +550,7 @@ export default function PracticeGameScreen() {
               {verse.text.trim().split(/\s+/).filter(Boolean).map((word, i) => {
                 const wrong = (score.wrongExpectedIndices ?? []).includes(i);
                 return (
-                  <Text key={i} style={wrong ? [styles.reviewVerseWord, { backgroundColor: colors.error + "33", color: colors.error }] : styles.reviewVerseWord}>
+                  <Text key={i} style={wrong ? [styles.reviewVerseWord, styles.reviewVerseMiss] : styles.reviewVerseWord}>
                     {word}{" "}
                   </Text>
                 );
@@ -471,9 +562,16 @@ export default function PracticeGameScreen() {
                 <Text style={styles.whatYouSaid}>{whatYouSaid}</Text>
               </>
             )}
-            <Text style={styles.liveIt}>
-              The goal isn't just to memorize—it's to hide God's Word in your heart and live it.
-            </Text>
+            <Text style={styles.liveIt}>Memorizing is the start. Live this Word.</Text>
+            {isIntro && passedThisRound ? (
+              <Pressable
+                onPress={() => router.push("/contact")}
+                accessibilityRole="button"
+                accessibilityLabel="This Word is about Jesus"
+              >
+                <Text style={styles.jesusDoor}>This Word is about Jesus. Want to talk with someone?</Text>
+              </Pressable>
+            ) : null}
           </Animated.View>
           <View style={styles.resultButtonsCol}>
             <Pressable
@@ -485,23 +583,23 @@ export default function PracticeGameScreen() {
                 setHintCount(0);
               }}
             >
-              <Text style={styles.retryBtnText}>{score.percent >= 80 ? "Retry" : "Try again"}</Text>
+              <Text style={styles.retryBtnText}>{passedThisRound ? "Speak it again" : "Try again"}</Text>
             </Pressable>
-            {score.percent >= 80 ? (
+            {passedThisRound ? (
               <Pressable
                 style={({ pressed }) => [styles.primaryBtn, { backgroundColor: colors.primary, transform: [{ scale: pressed ? 0.96 : 1 }] }]}
                 onPress={handleNext}
               >
-                <Text style={styles.primaryBtnText}>Next</Text>
+                <Text style={styles.primaryBtnText}>{isIntro ? "Continue to home" : "Next verse"}</Text>
               </Pressable>
             ) : null}
             <Pressable
               style={({ pressed }) => [styles.quitBtn, { opacity: pressed ? 0.7 : 1 }]}
-              onPress={() => router.back()}
+              onPress={() => (isIntro ? leaveIntroToHome() : router.back())}
               accessibilityRole="button"
-              accessibilityLabel="Cancel"
+              accessibilityLabel="Done"
             >
-              <Text style={styles.quitBtnText}>Cancel</Text>
+              <Text style={styles.quitBtnText}>Done</Text>
             </Pressable>
           </View>
         </>
@@ -574,6 +672,7 @@ function ReciteComposerTypeOnly({
   colors: ThemeColors;
 }) {
   const insets = useSafeAreaInsets();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const [text, setText] = useState("");
   const canCheck = text.trim().length > 0;
   const submit = () => {
@@ -620,7 +719,7 @@ function ReciteComposerTypeOnly({
             },
           ]}
           accessibilityRole="button"
-          accessibilityLabel="Check answer"
+          accessibilityLabel="Check"
         >
           <Ionicons name="checkmark" size={24} color={colors.primaryText} />
         </Pressable>
@@ -639,6 +738,7 @@ function ReciteComposerWithSpeech({
   colors: ThemeColors;
 }) {
   const insets = useSafeAreaInsets();
+  const styles = useMemo(() => createStyles(colors), [colors]);
   const [transcript, setTranscript] = useState("");
   const [editableTranscript, setEditableTranscript] = useState("");
   const [reviewMode, setReviewMode] = useState(false);
@@ -656,7 +756,7 @@ function ReciteComposerWithSpeech({
     transcriptRef.current = "";
     setReviewMode(false);
     setListening(true);
-    setStatus("Listening...");
+    setStatus("Listening — speak the Word");
     pulseActive.current = true;
     const pulse = () => {
       if (!pulseActive.current) return;
@@ -720,6 +820,7 @@ function ReciteComposerWithSpeech({
     setReviewMode(false);
     setEditableTranscript("");
     setTranscript("");
+    transcriptRef.current = "";
     setStatus("Starting...");
     try {
       ExpoSpeechRecognitionModule.start({ lang: "en-US", interimResults: true, continuous: true });
@@ -744,14 +845,6 @@ function ReciteComposerWithSpeech({
     onResult(result, text, "speech");
   }, [verse, reviewMode, editableTranscript, transcript, onResult]);
 
-  const handleRecordAgain = useCallback(() => {
-    setReviewMode(false);
-    setTranscript("");
-    setEditableTranscript("");
-    transcriptRef.current = "";
-    setStatus("Ready");
-  }, []);
-
   const displayText = reviewMode ? editableTranscript : transcript;
   const onChangeComposerText = (t: string) => {
     if (reviewMode) setEditableTranscript(t);
@@ -759,18 +852,14 @@ function ReciteComposerWithSpeech({
   };
 
   const onMicPress = useCallback(() => {
-    if (reviewMode) {
-      handleRecordAgain();
-      return;
-    }
     if (isListening) handleStop();
     else void handleStart();
-  }, [reviewMode, isListening, handleRecordAgain, handleStop, handleStart]);
+  }, [isListening, handleStop, handleStart]);
 
   const canCheckSpeech =
     !isListening && (reviewMode ? editableTranscript : transcript).trim().length > 0;
   const placeholder = isListening
-    ? "Listening…"
+    ? "Listening — speak the Word"
     : reviewMode
       ? "Edit if needed…"
       : "Tap the mic to speak, or type here";
@@ -819,7 +908,7 @@ function ReciteComposerWithSpeech({
             },
           ]}
           accessibilityRole="button"
-          accessibilityLabel="Check answer"
+          accessibilityLabel="Check"
         >
           <Ionicons name="checkmark" size={24} color={colors.primaryText} />
         </Pressable>
@@ -844,163 +933,230 @@ function ReciteComposerWithSpeech({
   );
 }
 
-const styles = StyleSheet.create({
-  keyboardAvoid: { flex: 1 },
-  container: { flex: 1, backgroundColor: "#f8fafc" },
-  scrollInner: { flex: 1 },
-  content: { padding: 24 },
-  contentRecitePad: { paddingBottom: 120 },
-  composerBar: {
-    borderTopWidth: 1,
-    paddingTop: 10,
-    paddingHorizontal: 16,
-  },
-  composerStatus: { fontSize: 12, marginBottom: 6 },
-  composerRow: { flexDirection: "row", alignItems: "flex-end", gap: 10 },
-  composerInput: {
-    flex: 1,
-    minHeight: 44,
-    maxHeight: 120,
-    borderWidth: 1,
-    borderRadius: 22,
-    paddingHorizontal: 16,
-    paddingVertical: Platform.OS === "ios" ? 10 : 8,
-    fontSize: 16,
-    textAlignVertical: "top",
-  },
-  composerIconBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 0,
-  },
-  composerMicBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  confettiOverlay: { ...StyleSheet.absoluteFillObject },
-  streakModalBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 24,
-  },
-  streakModalCard: {
-    width: "100%",
-    maxWidth: 320,
-    borderRadius: 20,
-    padding: 28,
-    alignItems: "center",
-    borderWidth: 2,
-  },
-  streakModalEmoji: { fontSize: 48, marginBottom: 12 },
-  streakModalTitle: { fontSize: 22, fontWeight: "700", textAlign: "center", marginBottom: 8 },
-  streakModalSubtitle: { fontSize: 15, textAlign: "center", marginBottom: 24, lineHeight: 22 },
-  streakModalBtn: { paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12 },
-  streakModalBtnText: { fontSize: 16, fontWeight: "600", color: "#fff" },
-  versePickerBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 24,
-  },
-  versePickerCard: {
-    width: "100%",
-    maxWidth: 400,
-    maxHeight: "80%",
-    borderRadius: 16,
-    padding: 16,
-  },
-  versePickerTitle: { fontSize: 18, fontWeight: "600", marginBottom: 12 },
-  versePickerList: { maxHeight: 320, marginBottom: 12 },
-  versePickerRow: { paddingVertical: 12, paddingHorizontal: 8, borderRadius: 10, marginBottom: 4 },
-  versePickerRef: { fontSize: 15, fontWeight: "600", marginBottom: 2 },
-  versePickerPreview: { fontSize: 14, lineHeight: 20 },
-  versePickerCancel: { paddingVertical: 12, alignItems: "center" },
-  versePickerCancelText: { fontSize: 16 },
-  centered: { flex: 1, justifyContent: "center", alignItems: "center" },
-  ref: { fontSize: 18, fontWeight: "600", color: "#2563eb", marginBottom: 16 },
-  verseText: { fontSize: 16, color: "#334155", lineHeight: 24, marginBottom: 24 },
-  rangeModeBtn: { paddingVertical: 14, borderRadius: 10, alignItems: "center", marginBottom: 12, backgroundColor: "#f0fdf4", borderWidth: 1, borderColor: "#bbf7d0" },
-  rangeModeBtnText: { fontSize: 15, fontWeight: "600", color: "#15803d" },
-  reciteHint: { fontSize: 14, color: "#64748b", marginBottom: 12 },
-  hintBtn: {
-    alignSelf: "flex-start",
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-    backgroundColor: "#e0e7ff",
-    marginBottom: 12,
-  },
-  hintBtnDisabled: { opacity: 0.5 },
-  hintBtnText: { fontSize: 14, color: "#3730a3", fontWeight: "500" },
-  hintBox: {
-    backgroundColor: "#f1f5f9",
-    borderRadius: 10,
-    padding: 14,
-    marginBottom: 16,
-    borderLeftWidth: 4,
-    borderLeftColor: "#94a3b8",
-  },
-  hintLabel: { fontSize: 12, color: "#64748b", marginBottom: 4 },
-  hintReveal: { fontSize: 15, color: "#334155", fontStyle: "italic" },
-  reviewCard: {
-    backgroundColor: "#fff",
-    borderRadius: 14,
-    padding: 20,
-    marginBottom: 24,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  reviewSection: { fontSize: 13, fontWeight: "600", color: "#64748b", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 },
-  reviewVerse: { fontSize: 16, color: "#334155", lineHeight: 26, marginBottom: 16 },
-  reviewVerseWord: { fontSize: 16, lineHeight: 26 },
-  whatYouSaid: { fontSize: 15, color: "#475569", lineHeight: 24, fontStyle: "italic", marginBottom: 16 },
-  liveIt: {
-    fontSize: 14,
-    color: "#64748b",
-    fontStyle: "italic",
-    lineHeight: 22,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#e2e8f0",
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-    borderRadius: 10,
-    padding: 14,
-    fontSize: 16,
-    minHeight: 120,
-    textAlignVertical: "top",
-    backgroundColor: "#fff",
-    marginBottom: 16,
-  },
-  primaryBtn: { backgroundColor: "#2563eb", paddingVertical: 14, borderRadius: 10, alignItems: "center", marginBottom: 12 },
-  primaryBtnText: { fontSize: 16, fontWeight: "600", color: "#fff" },
-  secondaryBtn: { paddingVertical: 14, alignItems: "center", marginBottom: 12 },
-  secondaryBtnText: { fontSize: 16, color: "#64748b" },
-  scoreCard: { padding: 20, borderRadius: 16, marginBottom: 20, alignItems: "center" },
-  scoreGood: { backgroundColor: "#d1fae5", borderWidth: 2, borderColor: "#10b981" },
-  scoreOkay: { backgroundColor: "#fef3c7", borderWidth: 2, borderColor: "#f59e0b" },
-  scoreLow: { backgroundColor: "#fee2e2", borderWidth: 2, borderColor: "#ef4444" },
-  resultLabel: { fontSize: 14, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 },
-  resultLabelSuccess: { color: "#047857" },
-  resultLabelFail: { color: "#b91c1c" },
-  scoreTitle: { fontSize: 20, fontWeight: "700", color: "#0f172a", marginBottom: 4 },
-  scoreText: { fontSize: 16, color: "#334155" },
-  resultButtonsCol: { marginBottom: 12 },
-  retryBtn: { paddingVertical: 14, borderRadius: 10, alignItems: "center", marginBottom: 10, backgroundColor: "#e2e8f0" },
-  retryBtnText: { fontSize: 16, fontWeight: "600", color: "#475569" },
-  quitBtn: { paddingVertical: 14, alignItems: "center", marginBottom: 10 },
-  quitBtnText: { fontSize: 16, color: "#64748b" },
-  unsupported: { padding: 16, backgroundColor: "#fef3c7", borderRadius: 10, marginBottom: 16 },
-  unsupportedText: { fontSize: 14, color: "#78350f" },
-});
+function createStyles(colors: ThemeColors) {
+  return StyleSheet.create({
+    keyboardAvoid: { flex: 1 },
+    container: { flex: 1, backgroundColor: colors.background },
+    scrollInner: { flex: 1 },
+    content: { padding: 24 },
+    contentRecitePad: { paddingBottom: 120 },
+    composerBar: {
+      borderTopWidth: 1,
+      paddingTop: 10,
+      paddingHorizontal: 16,
+    },
+    composerStatus: { fontSize: 12, marginBottom: 6 },
+    composerRow: { flexDirection: "row", alignItems: "flex-end", gap: 10 },
+    composerInput: {
+      flex: 1,
+      minHeight: 44,
+      maxHeight: 120,
+      borderWidth: 1,
+      borderRadius: 22,
+      paddingHorizontal: 16,
+      paddingVertical: Platform.OS === "ios" ? 10 : 8,
+      fontSize: 16,
+      textAlignVertical: "top",
+    },
+    composerIconBtn: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      alignItems: "center",
+      justifyContent: "center",
+      marginBottom: 0,
+    },
+    composerMicBtn: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    confettiOverlay: { ...StyleSheet.absoluteFillObject },
+    streakModalBackdrop: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.5)",
+      justifyContent: "center",
+      alignItems: "center",
+      padding: 24,
+    },
+    streakModalCard: {
+      width: "100%",
+      maxWidth: 320,
+      borderRadius: 20,
+      padding: 28,
+      alignItems: "center",
+      borderWidth: 2,
+    },
+    streakModalEmoji: { fontSize: 48, marginBottom: 12 },
+    streakModalTitle: { fontSize: 22, fontWeight: "700", textAlign: "center", marginBottom: 8 },
+    streakModalSubtitle: { fontSize: 15, textAlign: "center", marginBottom: 24, lineHeight: 22 },
+    streakModalBtn: { paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12 },
+    streakModalBtnText: { fontSize: 16, fontWeight: "600", color: colors.primaryText },
+    versePickerBackdrop: {
+      flex: 1,
+      backgroundColor: "rgba(0,0,0,0.5)",
+      justifyContent: "center",
+      alignItems: "center",
+      padding: 24,
+    },
+    versePickerCard: {
+      width: "100%",
+      maxWidth: 400,
+      maxHeight: "80%",
+      borderRadius: 16,
+      padding: 16,
+    },
+    versePickerTitle: { fontSize: 18, fontWeight: "600", marginBottom: 12 },
+    versePickerList: { maxHeight: 320, marginBottom: 12 },
+    versePickerRow: { paddingVertical: 12, paddingHorizontal: 8, borderRadius: 10, marginBottom: 4 },
+    versePickerRef: { fontSize: 15, fontWeight: "600", marginBottom: 2 },
+    versePickerPreview: { fontSize: 14, lineHeight: 20 },
+    versePickerCancel: { paddingVertical: 12, alignItems: "center" },
+    versePickerCancelText: { fontSize: 16 },
+    centered: { flex: 1, justifyContent: "center", alignItems: "center" },
+    ref: { fontSize: 18, fontWeight: "600", color: colors.primary, marginBottom: 16 },
+    refInRow: { flex: 1, marginBottom: 0, marginRight: 12 },
+    memorizeHeaderRow: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      marginBottom: 20,
+    },
+    favoriteBtn: { padding: 4, marginTop: -2 },
+    verseText: { fontSize: 22, color: colors.textSecondary, lineHeight: 34, marginBottom: 32 },
+    rangeModeBtn: {
+      paddingVertical: 14,
+      borderRadius: 12,
+      alignItems: "center",
+      marginBottom: 12,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
+    rangeModeBtnText: { fontSize: 15, fontWeight: "600", color: colors.primary },
+    reciteHint: { fontSize: 16, color: colors.textSecondary, lineHeight: 24, marginBottom: 16 },
+    hintBtn: {
+      alignSelf: "flex-start",
+      paddingVertical: 8,
+      paddingHorizontal: 14,
+      borderRadius: 8,
+      backgroundColor: colors.primary + "18",
+      marginBottom: 12,
+    },
+    hintBtnDisabled: { opacity: 0.5 },
+    hintBtnText: { fontSize: 14, color: colors.primary, fontWeight: "500" },
+    hintBox: {
+      backgroundColor: colors.surface,
+      borderRadius: 10,
+      padding: 14,
+      marginBottom: 16,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+      borderLeftWidth: 4,
+      borderLeftColor: colors.primary,
+    },
+    hintLabel: { fontSize: 12, color: colors.textMuted, marginBottom: 4 },
+    hintReveal: { fontSize: 15, color: colors.textSecondary, fontStyle: "italic" },
+    reviewCard: {
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      padding: 20,
+      marginBottom: 24,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
+    reviewSection: {
+      fontSize: 13,
+      fontWeight: "600",
+      color: colors.textMuted,
+      marginBottom: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+    },
+    reviewVerse: { fontSize: 16, color: colors.textSecondary, lineHeight: 26, marginBottom: 16 },
+    reviewVerseWord: { fontSize: 16, lineHeight: 26 },
+    reviewVerseMiss: {
+      backgroundColor: colors.warning + "33",
+      color: colors.text,
+    },
+    whatYouSaid: { fontSize: 15, color: colors.textMuted, lineHeight: 24, fontStyle: "italic", marginBottom: 16 },
+    liveIt: {
+      fontSize: 14,
+      color: colors.textMuted,
+      fontStyle: "italic",
+      lineHeight: 22,
+      paddingTop: 12,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+    },
+    jesusDoor: {
+      fontSize: 15,
+      fontWeight: "600",
+      color: colors.primary,
+      lineHeight: 22,
+      marginTop: 14,
+    },
+    input: {
+      borderWidth: 1,
+      borderColor: colors.inputBorder,
+      borderRadius: 10,
+      padding: 14,
+      fontSize: 16,
+      minHeight: 120,
+      textAlignVertical: "top",
+      backgroundColor: colors.inputBg,
+      marginBottom: 16,
+    },
+    primaryBtn: {
+      backgroundColor: colors.primary,
+      paddingVertical: 14,
+      borderRadius: 12,
+      alignItems: "center",
+      marginBottom: 12,
+    },
+    primaryBtnText: { fontSize: 16, fontWeight: "600", color: colors.primaryText },
+    secondaryBtn: { paddingVertical: 14, alignItems: "center", marginBottom: 12 },
+    secondaryBtnText: { fontSize: 16, color: colors.textMuted },
+    scoreCard: { padding: 20, borderRadius: 16, marginBottom: 20, alignItems: "center" },
+    scoreGood: {
+      backgroundColor: colors.success + "22",
+      borderWidth: 2,
+      borderColor: colors.success,
+    },
+    scoreOkay: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
+    scoreLow: {
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
+    resultLabel: { fontSize: 14, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 },
+    resultLabelSuccess: { color: colors.successText },
+    resultLabelFail: { color: colors.textMuted },
+    scoreTitle: { fontSize: 20, fontWeight: "700", color: colors.text, marginBottom: 4, textAlign: "center" },
+    scoreText: { fontSize: 16, color: colors.textSecondary },
+    resultButtonsCol: { marginBottom: 12 },
+    retryBtn: {
+      paddingVertical: 14,
+      borderRadius: 12,
+      alignItems: "center",
+      marginBottom: 10,
+      backgroundColor: colors.border,
+    },
+    retryBtnText: { fontSize: 16, fontWeight: "600", color: colors.textSecondary },
+    quitBtn: { paddingVertical: 14, alignItems: "center", marginBottom: 10 },
+    quitBtnText: { fontSize: 16, color: colors.textMuted },
+    unsupported: {
+      padding: 16,
+      backgroundColor: colors.warning + "22",
+      borderRadius: 10,
+      marginBottom: 16,
+    },
+    unsupportedText: { fontSize: 14, color: colors.textSecondary },
+  });
+}

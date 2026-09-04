@@ -13,9 +13,9 @@ import {
   Modal,
   Pressable,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColors, type ThemeColors } from "../../constants/theme";
-import { getFavoriteVerses, setFavorite } from "../../database/queries";
-import type { GameVerse } from "../../types/verse";
+import { getFavoriteVerses, getVerseByBookChapterVerse, setFavorite } from "../../database/queries";
 import {
   groupFavoriteVersesIntoChallenges,
   getChallengeReference,
@@ -29,8 +29,15 @@ import {
 
 type CompletionFilter = "all" | "completed" | "not_completed";
 
+const JESUS_STARTERS = [
+  { label: "John 3:16", book: 43, chapter: 3, verse: 16 },
+  { label: "John 14:6", book: 43, chapter: 14, verse: 6 },
+  { label: "Romans 10:9", book: 45, chapter: 10, verse: 9 },
+] as const;
+
 export default function PracticeScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const colors = useThemeColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const [challenges, setChallenges] = useState<ChallengeItem[]>([]);
@@ -38,6 +45,7 @@ export default function PracticeScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [completionFilter, setCompletionFilter] = useState<CompletionFilter>("all");
   const [filterSheetVisible, setFilterSheetVisible] = useState(false);
+  const [openingStarter, setOpeningStarter] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,8 +65,8 @@ export default function PracticeScreen() {
       const ref = getChallengeReference(item);
       const ids = getChallengeVerseIds(item);
       Alert.alert(
-        "Remove from challenges",
-        `Are you sure you want to remove "${ref}" from your challenges?`,
+        "Remove this verse?",
+        `Remove "${ref}" from My Challenges?`,
         [
           { text: "Cancel", style: "cancel" },
           {
@@ -73,6 +81,30 @@ export default function PracticeScreen() {
       );
     },
     [load]
+  );
+
+  const startJesusVerse = useCallback(
+    async (book: number, chapter: number, verse: number) => {
+      if (openingStarter) return;
+      setOpeningStarter(true);
+      try {
+        const found = await getVerseByBookChapterVerse(book, chapter, verse);
+        if (!found) {
+          Alert.alert("Verse unavailable", "We couldn't open that verse. Try adding one instead.");
+          return;
+        }
+        await setFavorite(found.id, true);
+        router.push({
+          pathname: "/practice-game",
+          params: { verseId: found.id, mode: "speech" },
+        });
+      } catch {
+        Alert.alert("Something went wrong", "Please try again.");
+      } finally {
+        setOpeningStarter(false);
+      }
+    },
+    [openingStarter, router]
   );
 
   const filteredChallenges = useMemo(() => {
@@ -103,17 +135,17 @@ export default function PracticeScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}>
         <Text style={styles.title}>My Challenges</Text>
-        <Text style={styles.subtitle}>
-          Verses you're working on. Tap to practice by speech or type.
-        </Text>
+        <Text style={styles.subtitle}>Your verses. Tap one to speak it.</Text>
         <TouchableOpacity
           style={styles.addBtn}
           onPress={() => router.push("/add-to-challenges")}
+          accessibilityRole="button"
+          accessibilityLabel="Add a verse"
         >
-          <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
-          <Text style={styles.addBtnText}>Add verse or chapter</Text>
+          <Ionicons name="add" size={18} color={colors.primary} />
+          <Text style={styles.addBtnText}>Add a verse</Text>
         </TouchableOpacity>
         {challenges.length > 0 && (
           <View style={styles.searchRow}>
@@ -151,7 +183,7 @@ export default function PracticeScreen() {
                 }}
               >
                 <Text style={[styles.sheetOptionText, { color: colors.text }]}>
-                  {opt === "all" ? "All" : opt === "completed" ? "Completed only" : "Not completed only"}
+                  {opt === "all" ? "All" : opt === "completed" ? "Completed" : "Still practicing"}
                 </Text>
                 {completionFilter === opt && <Ionicons name="checkmark" size={20} color={colors.primary} />}
               </TouchableOpacity>
@@ -161,14 +193,34 @@ export default function PracticeScreen() {
       </Modal>
       {challenges.length === 0 ? (
         <View style={styles.empty}>
-          <Ionicons name="book-outline" size={48} color={colors.textMuted} />
-          <Text style={styles.emptyText}>No verses in your list yet.</Text>
-          <Text style={styles.emptyHint}>Default favorites are loaded from the app.</Text>
+          <View style={styles.emptyIcon}>
+            <Ionicons name="heart" size={22} color={colors.primary} />
+          </View>
+          <Text style={styles.emptyText}>Start with a verse about Jesus</Text>
+          <Text style={styles.emptyHint}>Pick one to speak, or add any verse you want.</Text>
+          <View style={styles.starterList}>
+            {JESUS_STARTERS.map((starter) => (
+              <Pressable
+                key={starter.label}
+                style={({ pressed }) => [
+                  styles.starterBtn,
+                  { opacity: openingStarter ? colors.disabledOpacity : pressed ? 0.85 : 1 },
+                ]}
+                onPress={() => startJesusVerse(starter.book, starter.chapter, starter.verse)}
+                disabled={openingStarter}
+                accessibilityRole="button"
+                accessibilityLabel={`Speak ${starter.label}`}
+              >
+                <Text style={styles.starterBtnText}>{starter.label}</Text>
+                <Ionicons name="chevron-forward" size={18} color={colors.primary} />
+              </Pressable>
+            ))}
+          </View>
         </View>
       ) : filteredChallenges.length === 0 ? (
         <View style={styles.empty}>
-          <Ionicons name="search-outline" size={48} color={colors.textMuted} />
-          <Text style={styles.emptyText}>No challenges match your filters.</Text>
+          <Ionicons name="search-outline" size={40} color={colors.textMuted} />
+          <Text style={styles.emptyText}>Nothing matches</Text>
           <Text style={styles.emptyHint}>Try a different search or filter.</Text>
         </View>
       ) : (
@@ -187,7 +239,7 @@ export default function PracticeScreen() {
             const firstVerse = getChallengeFirstVerse(item);
             return (
               <TouchableOpacity
-                style={styles.card}
+                style={[styles.card, completed && styles.cardDone]}
                 onPress={() =>
                   router.push({
                     pathname: "/practice-game",
@@ -199,33 +251,29 @@ export default function PracticeScreen() {
                     },
                   })
                 }
+                onLongPress={() => handleRemove(item)}
+                delayLongPress={400}
                 activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel={`${ref}. ${completed ? "Speak again" : "Practice"}`}
+                accessibilityHint="Long press to remove"
               >
                 <View style={styles.cardTop}>
                   <Text style={styles.ref}>{ref}</Text>
                   <View style={styles.badgeRow}>
                     {score != null && (
-                      <Text style={styles.scoreBadge}>{score}%</Text>
+                      <Text style={[styles.scoreBadge, completed && styles.scoreBadgeDone]}>{score}%</Text>
                     )}
                     {completed && (
-                      <View style={styles.badge}>
-                        <Ionicons name="checkmark-circle" size={18} color={colors.success} />
-                      </View>
+                      <Ionicons name="checkmark-circle" size={18} color={colors.success} />
                     )}
-                    <TouchableOpacity
-                      hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                      onPress={() => handleRemove(item)}
-                      style={styles.removeBtn}
-                    >
-                      <Ionicons name="trash-outline" size={20} color={colors.textMuted} />
-                    </TouchableOpacity>
                   </View>
                 </View>
                 <Text style={styles.preview} numberOfLines={2}>
                   {getChallengePreview(item)}
                 </Text>
                 <View style={styles.ctaRow}>
-                  <Text style={styles.cta}>Practice</Text>
+                  <Text style={styles.cta}>{completed ? "Speak again" : "Practice"}</Text>
                   <Ionicons name="chevron-forward" size={18} color={colors.primary} />
                 </View>
               </TouchableOpacity>
@@ -241,11 +289,22 @@ function createStyles(colors: ThemeColors) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
     centered: { flex: 1, justifyContent: "center", alignItems: "center" },
-    header: { padding: 20, paddingBottom: 12 },
-    title: { fontSize: 26, fontWeight: "700", color: colors.text, marginBottom: 6 },
-    subtitle: { fontSize: 14, color: colors.textMuted, lineHeight: 20, marginBottom: 14 },
-    addBtn: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "flex-start" },
-    addBtnText: { fontSize: 15, color: colors.primary, fontWeight: "600" },
+    header: { paddingHorizontal: 20, paddingBottom: 12 },
+    title: { fontSize: 26, fontWeight: "700", color: colors.text },
+    subtitle: { fontSize: 15, color: colors.textMuted, lineHeight: 22, marginTop: 6, marginBottom: 14 },
+    addBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      alignSelf: "flex-start",
+      paddingVertical: 8,
+      paddingHorizontal: 12,
+      borderRadius: 20,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
+    addBtnText: { fontSize: 14, fontWeight: "600", color: colors.primary },
     searchRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14 },
     searchInput: {
       flex: 1,
@@ -303,18 +362,45 @@ function createStyles(colors: ThemeColors) {
       marginBottom: 12,
       borderWidth: 1,
       borderColor: colors.surfaceBorder,
+      borderLeftWidth: 4,
+      borderLeftColor: colors.primary,
+    },
+    cardDone: {
+      borderLeftColor: colors.success,
     },
     cardTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
-    ref: { fontSize: 15, fontWeight: "600", color: colors.primary },
+    ref: { fontSize: 15, fontWeight: "600", color: colors.primary, flex: 1, marginRight: 8 },
     badgeRow: { flexDirection: "row", alignItems: "center", gap: 8 },
     scoreBadge: { fontSize: 13, fontWeight: "600", color: colors.textMuted },
-    badge: {},
-    removeBtn: { padding: 4 },
+    scoreBadgeDone: { color: colors.successText },
     preview: { fontSize: 14, color: colors.textMuted, lineHeight: 20, marginBottom: 12 },
     ctaRow: { flexDirection: "row", alignItems: "center", gap: 4 },
     cta: { fontSize: 14, color: colors.primary, fontWeight: "500" },
-    empty: { flex: 1, justifyContent: "center", alignItems: "center", padding: 40 },
-    emptyText: { fontSize: 16, color: colors.textMuted, marginTop: 12 },
-    emptyHint: { fontSize: 13, color: colors.textMuted, marginTop: 6 },
+    empty: { flex: 1, justifyContent: "center", alignItems: "center", padding: 28 },
+    emptyIcon: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
+    emptyText: { fontSize: 18, fontWeight: "700", color: colors.text, marginTop: 16, textAlign: "center" },
+    emptyHint: { fontSize: 14, color: colors.textMuted, marginTop: 6, textAlign: "center", lineHeight: 20 },
+    starterList: { width: "100%", maxWidth: 320, marginTop: 20, gap: 10 },
+    starterBtn: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      paddingVertical: 14,
+      paddingHorizontal: 16,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
+    starterBtnText: { fontSize: 16, fontWeight: "600", color: colors.text },
   });
 }

@@ -33,7 +33,10 @@ export default function RootLayout() {
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
         <StatusBar barStyle={colorScheme === "dark" ? "light-content" : "dark-content"} />
         <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={[styles.loading, { color: colors.textMuted }]}>Loading...</Text>
+        <Text style={[styles.loading, { color: colors.text }]}>Preparing Scripture</Text>
+        <Text style={[styles.loadingHint, { color: colors.textMuted }]}>
+          This only takes a little while the first time.
+        </Text>
       </View>
     );
   }
@@ -52,7 +55,15 @@ export default function RootLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="intro" />
         <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="contact" />
+        <Stack.Screen
+          name="contact"
+          options={{
+            headerShown: true,
+            title: "About",
+            headerStyle: { backgroundColor: colors.surface },
+            headerTintColor: colors.text,
+          }}
+        />
         <Stack.Screen
           name="practice-game"
           options={{
@@ -66,7 +77,7 @@ export default function RootLayout() {
           name="add-to-challenges"
           options={{
             headerShown: true,
-            title: "Add to challenges",
+            title: "Add a verse",
             headerStyle: { backgroundColor: colors.surface },
             headerTintColor: colors.text,
           }}
@@ -75,7 +86,7 @@ export default function RootLayout() {
           name="add-range"
           options={{
             headerShown: true,
-            title: "Add range",
+            title: "Add a passage",
             headerStyle: { backgroundColor: colors.surface },
             headerTintColor: colors.text,
           }}
@@ -87,6 +98,7 @@ export default function RootLayout() {
 
 const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: "center", alignItems: "center" },
-  loading: { marginTop: 12 },
+  loading: { marginTop: 12, fontSize: 16, fontWeight: "600" },
+  loadingHint: { marginTop: 6, fontSize: 14, textAlign: "center", paddingHorizontal: 32 },
   error: { padding: 24 },
 });

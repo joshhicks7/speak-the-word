@@ -10,25 +10,22 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0B1E4A"
     },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.jagoalt.speaktheword",
       "infoPlist": {
-        "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to use speech recognition.",
-        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone.",
-        "NSPhotoLibraryUsageDescription": "Speak the Word may access your photo library only when you choose an image (for example, to attach or share content).",
+        "NSSpeechRecognitionUsageDescription": "Speak the Word uses speech recognition so it can check the verse you recite.",
+        "NSMicrophoneUsageDescription": "Speak the Word uses the microphone so you can recite Scripture aloud.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#0B1E4A",
+        "foregroundImage": "./assets/android-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
@@ -43,8 +40,8 @@
       [
         "expo-speech-recognition",
         {
-          "microphonePermission": "Allow $(PRODUCT_NAME) to use the microphone.",
-          "speechRecognitionPermission": "Allow $(PRODUCT_NAME) to use speech recognition."
+          "microphonePermission": "Speak the Word uses the microphone so you can recite Scripture aloud.",
+          "speechRecognitionPermission": "Speak the Word uses speech recognition so it can check the verse you recite."
         }
       ],
       [
@@ -53,11 +50,12 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#ffffff"
+          "backgroundColor": "#0B1E4A"
         }
       ],
       "expo-sqlite",
-      "expo-router"
+      "expo-router",
+      "expo-font"
     ],
     "extra": {
       "router": {},

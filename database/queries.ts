@@ -53,6 +53,19 @@ export const getVerseById = async (id: string): Promise<GameVerse | null> => {
   return result ? rowToGameVerse(result as Record<string, unknown>) : null;
 };
 
+export const getVerseByBookChapterVerse = async (
+  book: number,
+  chapter: number,
+  verse: number
+): Promise<GameVerse | null> => {
+  const db = await getDatabase();
+  const result = await db.getFirstAsync(
+    "SELECT * FROM verses WHERE book = ? AND chapter = ? AND verse = ?",
+    [book, chapter, verse]
+  );
+  return result ? rowToGameVerse(result as Record<string, unknown>) : null;
+};
+
 export const getSortedVerses = async (): Promise<GameVerse[]> => {
   const db = await getDatabase();
   const result = await db.getAllAsync(

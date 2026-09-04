@@ -1,12 +1,110 @@
-export function normalizeForCompare(text: string): string[] {
+/** Digit / ordinal forms speech-to-text and typing often produce instead of spelled numbers. */
+const NUMBER_WORDS: Record<string, string> = {
+  "0": "zero",
+  "1": "one",
+  "2": "two",
+  "3": "three",
+  "4": "four",
+  "5": "five",
+  "6": "six",
+  "7": "seven",
+  "8": "eight",
+  "9": "nine",
+  "10": "ten",
+  "11": "eleven",
+  "12": "twelve",
+  "13": "thirteen",
+  "14": "fourteen",
+  "15": "fifteen",
+  "16": "sixteen",
+  "17": "seventeen",
+  "18": "eighteen",
+  "19": "nineteen",
+  "20": "twenty",
+  "30": "thirty",
+  "40": "forty",
+  "50": "fifty",
+  "60": "sixty",
+  "70": "seventy",
+  "80": "eighty",
+  "90": "ninety",
+  "100": "hundred",
+  "1000": "thousand",
+  "1st": "first",
+  "2nd": "second",
+  "3rd": "third",
+  "4th": "fourth",
+  "5th": "fifth",
+  "6th": "sixth",
+  "7th": "seventh",
+  "8th": "eighth",
+  "9th": "ninth",
+  "10th": "tenth",
+  "11th": "eleventh",
+  "12th": "twelfth",
+};
+
+/** Same word, different spelling — canonicalize to the left form. */
+const SPELLING_ALIASES: Record<string, string> = {
+  savior: "saviour",
+  honor: "honour",
+  honors: "honours",
+  honored: "honoured",
+  honorable: "honourable",
+  neighbor: "neighbour",
+  neighbors: "neighbours",
+  favor: "favour",
+  favors: "favours",
+  favored: "favoured",
+  labor: "labour",
+  labors: "labours",
+  color: "colour",
+  colors: "colours",
+  toward: "towards",
+  oh: "o",
+};
+
+function expandContractions(text: string): string {
   return text
-    .toLowerCase()
-    .replace(/\b's\b/g, " ") // "Jesus's" -> "Jesus " so we don't get an extra "s" word
-    .replace(/[.,;:!?'"]/g, " ")
+    .replace(/\bwon't\b/g, "will not")
+    .replace(/\bcan't\b/g, "can not")
+    .replace(/\bshan't\b/g, "shall not")
+    .replace(/\bain't\b/g, "am not")
+    .replace(/\blet's\b/g, "let us")
+    .replace(/\bi'm\b/g, "i am")
+    .replace(/n't/g, " not")
+    .replace(/\b(i|you|we|they)'re\b/g, "$1 are")
+    .replace(/\b(i|you|we|they)'ve\b/g, "$1 have")
+    .replace(/\b(i|you|he|she|we|they|it)'ll\b/g, "$1 will")
+    .replace(/\b(i|you|he|she|we|they|it)'d\b/g, "$1 would")
+    .replace(/\b(he|she|it|that|there|here|what|who)'s\b/g, "$1 is");
+}
+
+function canonicalWord(word: string): string {
+  if (NUMBER_WORDS[word]) return NUMBER_WORDS[word];
+  if (SPELLING_ALIASES[word]) return SPELLING_ALIASES[word];
+  return word;
+}
+
+export function normalizeForCompare(text: string): string[] {
+  const prepared = expandContractions(
+    text
+      .toLowerCase()
+      .replace(/[‘’]/g, "'")
+      .replace(/[“”]/g, '"')
+      .replace(/&/g, " and ")
+      .replace(/\+/g, " and ")
+      .replace(/[-–—]/g, "")
+  );
+
+  return prepared
+    .replace(/\b's\b/g, " ") // leftover possessives: "Jesus's" -> "Jesus"
+    .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .split(" ")
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(canonicalWord);
 }
 
 /** Levenshtein (edit) distance between two strings. */
@@ -53,6 +151,34 @@ export type AccuracyResult = {
   wrongExpectedIndices: number[];
 };
 
+function matchAt(
+  expectedWords: string[],
+  expectedIdx: number,
+  spokenWords: string[],
+  spokenIdx: number
+): { expectedConsumed: number; spokenConsumed: number } | null {
+  const expected = expectedWords[expectedIdx];
+  const spoken = spokenWords[spokenIdx];
+  if (wordsMatch(expected, spoken)) {
+    return { expectedConsumed: 1, spokenConsumed: 1 };
+  }
+  // "cannot" vs "can not", "today" vs "to day", "wellbeloved" vs "well beloved"
+  if (
+    spokenIdx + 1 < spokenWords.length &&
+    wordsMatch(expected, spokenWords[spokenIdx] + spokenWords[spokenIdx + 1])
+  ) {
+    return { expectedConsumed: 1, spokenConsumed: 2 };
+  }
+  // "for ever" vs "forever"
+  if (
+    expectedIdx + 1 < expectedWords.length &&
+    wordsMatch(expectedWords[expectedIdx] + expectedWords[expectedIdx + 1], spoken)
+  ) {
+    return { expectedConsumed: 2, spokenConsumed: 1 };
+  }
+  return null;
+}
+
 export function computeAccuracy(expected: string, spoken: string): AccuracyResult {
   const expectedWords = normalizeForCompare(expected);
   const spokenWords = normalizeForCompare(spoken);
@@ -64,21 +190,25 @@ export function computeAccuracy(expected: string, spoken: string): AccuracyResul
   let spokenIdx = 0;
   let skipsUsed = 0;
   const wrongExpectedIndices: number[] = [];
-  for (let i = 0; i < expectedWords.length; i++) {
-    const exp = expectedWords[i];
-    let matched = false;
+  for (let i = 0; i < expectedWords.length; ) {
+    let matched: { expectedConsumed: number; spokenConsumed: number } | null = null;
     while (spokenIdx < spokenWords.length) {
-      if (wordsMatch(exp, spokenWords[spokenIdx])) {
-        correct++;
-        spokenIdx++;
-        matched = true;
+      matched = matchAt(expectedWords, i, spokenWords, spokenIdx);
+      if (matched) {
+        correct += matched.expectedConsumed;
+        spokenIdx += matched.spokenConsumed;
         break;
       }
-      if (skipsUsed >= maxExtraWords) break; // no more skips allowed, count this expected word as wrong
+      if (skipsUsed >= maxExtraWords) break;
       spokenIdx++;
       skipsUsed++;
     }
-    if (!matched) wrongExpectedIndices.push(i);
+    if (!matched) {
+      wrongExpectedIndices.push(i);
+      i += 1;
+    } else {
+      i += matched.expectedConsumed;
+    }
   }
 
   return {

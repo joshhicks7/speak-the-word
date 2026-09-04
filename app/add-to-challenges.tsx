@@ -9,6 +9,8 @@ import {
   FlatList,
   ActivityIndicator,
   ScrollView,
+  Alert,
+  Pressable,
 } from "react-native";
 import { useThemeColors, type ThemeColors } from "../constants/theme";
 import {
@@ -17,9 +19,42 @@ import {
   getVersesByChapter,
   toggleFavorite,
   setChapterFavorites,
+  setRangeFavorites,
   type BibleBook,
+  type VersePosition,
 } from "../database/queries";
 import type { GameVerse } from "../types/verse";
+
+function toPos(v: GameVerse): VersePosition {
+  return { book: v.book, chapter: v.chapter, verse: v.verse };
+}
+
+function comparePos(a: VersePosition, b: VersePosition): number {
+  if (a.book !== b.book) return a.book - b.book;
+  if (a.chapter !== b.chapter) return a.chapter - b.chapter;
+  return a.verse - b.verse;
+}
+
+function orderedRange(a: VersePosition, b: VersePosition): { start: VersePosition; end: VersePosition } {
+  return comparePos(a, b) <= 0 ? { start: a, end: b } : { start: b, end: a };
+}
+
+function formatPos(pos: VersePosition, books: BibleBook[]): string {
+  const name = books.find((b) => b.book === pos.book)?.book_name ?? "";
+  return `${name} ${pos.chapter}:${pos.verse}`;
+}
+
+function isInSelectedRange(
+  v: GameVerse,
+  start: VersePosition | null,
+  end: VersePosition | null
+): boolean {
+  if (!start) return false;
+  const p = toPos(v);
+  if (!end) return comparePos(p, start) === 0;
+  const { start: s, end: e } = orderedRange(start, end);
+  return comparePos(p, s) >= 0 && comparePos(p, e) <= 0;
+}
 
 export default function AddToChallengesScreen() {
   const router = useRouter();
@@ -33,6 +68,10 @@ export default function AddToChallengesScreen() {
   const [loading, setLoading] = useState(true);
   const [loadingChapters, setLoadingChapters] = useState(false);
   const [loadingVerses, setLoadingVerses] = useState(false);
+  const [rangeMode, setRangeMode] = useState(false);
+  const [rangeStart, setRangeStart] = useState<VersePosition | null>(null);
+  const [rangeEnd, setRangeEnd] = useState<VersePosition | null>(null);
+  const [savingRange, setSavingRange] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -43,16 +82,23 @@ export default function AddToChallengesScreen() {
     return () => { cancelled = true; };
   }, []);
 
+  const clearRange = useCallback(() => {
+    setRangeMode(false);
+    setRangeStart(null);
+    setRangeEnd(null);
+  }, []);
+
   const onSelectBook = useCallback((book: BibleBook) => {
     setSelectedBook(book);
     setSelectedChapter(null);
     setVerses([]);
+    clearRange();
     setLoadingChapters(true);
     getChaptersForBook(book.book).then((ch) => {
       setChapters(ch);
       setLoadingChapters(false);
     });
-  }, []);
+  }, [clearRange]);
 
   const onSelectChapter = useCallback((chapter: number) => {
     if (!selectedBook) return;
@@ -79,6 +125,33 @@ export default function AddToChallengesScreen() {
     setVerses(updated);
   }, [selectedBook, selectedChapter]);
 
+  const onAddRange = useCallback(async () => {
+    if (!rangeStart || !rangeEnd) return;
+    const { start, end } = orderedRange(rangeStart, rangeEnd);
+    setSavingRange(true);
+    try {
+      await setRangeFavorites(start, end, true);
+      if (selectedBook !== null && selectedChapter !== null) {
+        const updated = await getVersesByChapter(selectedBook.book, selectedChapter);
+        setVerses(updated);
+      }
+      clearRange();
+    } catch {
+      Alert.alert("Couldn't add that passage", "Please try again.");
+    } finally {
+      setSavingRange(false);
+    }
+  }, [rangeStart, rangeEnd, selectedBook, selectedChapter, clearRange]);
+
+  const onPickRangeVerse = useCallback((v: GameVerse) => {
+    const pos = toPos(v);
+    if (!rangeStart) {
+      setRangeStart(pos);
+      return;
+    }
+    setRangeEnd(pos);
+  }, [rangeStart]);
+
   const goBack = useCallback(() => {
     if (selectedChapter !== null) {
       setSelectedChapter(null);
@@ -86,10 +159,11 @@ export default function AddToChallengesScreen() {
     } else if (selectedBook !== null) {
       setSelectedBook(null);
       setChapters([]);
+      clearRange();
     } else {
       router.back();
     }
-  }, [selectedBook, selectedChapter, router]);
+  }, [selectedBook, selectedChapter, router, clearRange]);
 
   const currentChapterIndex = selectedBook && selectedChapter !== null ? chapters.indexOf(selectedChapter) : -1;
   const hasPrevChapter = currentChapterIndex > 0;
@@ -136,13 +210,18 @@ export default function AddToChallengesScreen() {
           keyExtractor={(item) => String(item.book)}
           contentContainerStyle={styles.list}
           ListHeaderComponent={
-            <TouchableOpacity
-              style={styles.addRangeBtn}
-              onPress={() => router.push("/add-range")}
-            >
-              <Ionicons name="git-branch-outline" size={22} color={colors.primary} />
-              <Text style={styles.addRangeText}>Add a range (e.g. Genesis 1:1–1:5)</Text>
-            </TouchableOpacity>
+            <View>
+              <Text style={styles.listHint}>Pick a book, or add a longer passage.</Text>
+              <TouchableOpacity
+                style={styles.addRangeBtn}
+                onPress={() => router.push("/add-range")}
+                accessibilityRole="button"
+                accessibilityLabel="Add a passage"
+              >
+                <Ionicons name="book-outline" size={22} color={colors.primary} />
+                <Text style={styles.addRangeText}>Add a passage</Text>
+              </TouchableOpacity>
+            </View>
           }
           renderItem={({ item }) => (
             <TouchableOpacity
@@ -166,6 +245,13 @@ export default function AddToChallengesScreen() {
               data={chapters}
               keyExtractor={(item) => String(item)}
               contentContainerStyle={styles.list}
+              ListHeaderComponent={
+                rangeMode && rangeStart ? (
+                  <Text style={styles.rangeHint}>
+                    {formatPos(rangeStart, books)} selected. Open the chapter for the last verse.
+                  </Text>
+                ) : null
+              }
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.row}
@@ -213,33 +299,94 @@ export default function AddToChallengesScreen() {
                 </TouchableOpacity>
               </View>
               <ScrollView style={styles.scroll} contentContainerStyle={styles.verseList}>
-              <TouchableOpacity
-                style={styles.addChapterBtn}
-                onPress={onAddEntireChapter}
-              >
-                <Ionicons name="add-circle" size={22} color={colors.primary} />
-                <Text style={styles.addChapterText}>Add entire chapter to challenges</Text>
-              </TouchableOpacity>
-              {verses.map((v) => (
-                <View key={v.id} style={styles.verseRow}>
-                  <View style={styles.verseInfo}>
-                    <Text style={styles.verseRef}>{v.reference}</Text>
-                    <Text style={styles.verseText}>{v.text}</Text>
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => onToggleVerse(v.id)}
-                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                    style={styles.favBtn}
-                  >
-                    <Ionicons
-                      name={v.isFavorite ? "heart" : "heart-outline"}
-                      size={26}
-                      color={v.isFavorite ? colors.error : colors.textMuted}
-                    />
+              {rangeMode ? (
+                <View style={styles.rangeBanner}>
+                  <Text style={styles.rangeHint}>
+                    {!rangeStart
+                      ? "Tap the first verse, then the last. You can open another chapter in between."
+                      : !rangeEnd
+                        ? `${formatPos(rangeStart, books)} selected. Tap the last verse.`
+                        : `${formatPos(orderedRange(rangeStart, rangeEnd).start, books)} – ${formatPos(orderedRange(rangeStart, rangeEnd).end, books)}`}
+                  </Text>
+                  <TouchableOpacity onPress={clearRange} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Text style={styles.rangeCancel}>Cancel</Text>
                   </TouchableOpacity>
                 </View>
-              ))}
+              ) : (
+                <View style={styles.chapterActions}>
+                  <TouchableOpacity style={styles.addChapterBtn} onPress={onAddEntireChapter}>
+                    <Ionicons name="add-circle" size={22} color={colors.primary} />
+                    <Text style={styles.addChapterText}>Add this chapter</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.selectRangeBtn}
+                    onPress={() => setRangeMode(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Select a range of verses"
+                  >
+                    <Ionicons name="swap-vertical" size={20} color={colors.primary} />
+                    <Text style={styles.addChapterText}>Select a range</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {verses.map((v) => {
+                const selected = rangeMode && isInSelectedRange(v, rangeStart, rangeEnd);
+                return (
+                  <TouchableOpacity
+                    key={v.id}
+                    style={[styles.verseRow, selected && styles.verseRowSelected]}
+                    onPress={() => (rangeMode ? onPickRangeVerse(v) : onToggleVerse(v.id))}
+                    activeOpacity={0.8}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      rangeMode
+                        ? `Select ${v.reference}`
+                        : v.isFavorite
+                          ? `Remove ${v.reference}`
+                          : `Add ${v.reference}`
+                    }
+                  >
+                    <View style={styles.verseInfo}>
+                      <Text style={styles.verseRef}>{v.reference}</Text>
+                      <Text style={styles.verseText}>{v.text}</Text>
+                    </View>
+                    {rangeMode ? (
+                      <Ionicons
+                        name={selected ? "checkmark-circle" : "ellipse-outline"}
+                        size={24}
+                        color={selected ? colors.primary : colors.textMuted}
+                      />
+                    ) : (
+                      <Ionicons
+                        name={v.isFavorite ? "heart" : "heart-outline"}
+                        size={26}
+                        color={v.isFavorite ? colors.primary : colors.textMuted}
+                      />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
               </ScrollView>
+              {rangeMode && rangeStart && rangeEnd ? (
+                <View style={styles.rangeCtaBar}>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.rangeCta,
+                      { opacity: savingRange || pressed ? 0.85 : 1 },
+                    ]}
+                    onPress={() => void onAddRange()}
+                    disabled={savingRange}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add this passage"
+                  >
+                    {savingRange ? (
+                      <ActivityIndicator color={colors.primaryText} />
+                    ) : (
+                      <Text style={styles.rangeCtaText}>Add this passage</Text>
+                    )}
+                  </Pressable>
+                </View>
+              ) : null}
             </>
           )}
         </>
@@ -255,6 +402,12 @@ function createStyles(colors: ThemeColors) {
     breadcrumb: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
     breadcrumbBtn: { flexDirection: "row", alignItems: "center", gap: 4 },
     breadcrumbText: { fontSize: 16, color: colors.primary, fontWeight: "500" },
+    listHint: {
+      fontSize: 15,
+      color: colors.textMuted,
+      lineHeight: 22,
+      marginBottom: 14,
+    },
     addRangeBtn: {
       flexDirection: "row",
       alignItems: "center",
@@ -311,18 +464,49 @@ function createStyles(colors: ThemeColors) {
     },
     scroll: { flex: 1 },
     verseList: { padding: 16, paddingBottom: 40 },
+    chapterActions: { flexDirection: "row", gap: 10, marginBottom: 16 },
     addChapterBtn: {
-      flexDirection: "row",
+      flex: 1,
+      flexDirection: "column",
       alignItems: "center",
-      gap: 10,
+      justifyContent: "center",
+      gap: 6,
       backgroundColor: colors.primary + "12",
-      padding: 14,
+      paddingVertical: 12,
+      paddingHorizontal: 8,
       borderRadius: 12,
-      marginBottom: 16,
       borderWidth: 1,
       borderColor: colors.primary + "40",
     },
-    addChapterText: { fontSize: 15, color: colors.primary, fontWeight: "600" },
+    selectRangeBtn: {
+      flex: 1,
+      flexDirection: "column",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      backgroundColor: colors.surface,
+      paddingVertical: 12,
+      paddingHorizontal: 8,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
+    addChapterText: { fontSize: 13, color: colors.primary, fontWeight: "600", textAlign: "center" },
+    rangeBanner: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      gap: 12,
+      marginBottom: 16,
+    },
+    rangeHint: {
+      flex: 1,
+      fontSize: 15,
+      color: colors.textSecondary,
+      lineHeight: 22,
+      marginBottom: 12,
+    },
+    rangeCancel: { fontSize: 15, fontWeight: "600", color: colors.primary, marginTop: 2 },
     verseRow: {
       flexDirection: "row",
       alignItems: "center",
@@ -333,9 +517,28 @@ function createStyles(colors: ThemeColors) {
       borderWidth: 1,
       borderColor: colors.surfaceBorder,
     },
+    verseRowSelected: {
+      borderColor: colors.primary,
+      backgroundColor: colors.primary + "12",
+    },
     verseInfo: { flex: 1, marginRight: 12 },
     verseRef: { fontSize: 14, fontWeight: "600", color: colors.primary, marginBottom: 4 },
     verseText: { fontSize: 15, color: colors.text, lineHeight: 22 },
     favBtn: { padding: 4 },
+    rangeCtaBar: {
+      paddingHorizontal: 16,
+      paddingTop: 12,
+      paddingBottom: 24,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      backgroundColor: colors.background,
+    },
+    rangeCta: {
+      backgroundColor: colors.primary,
+      paddingVertical: 14,
+      borderRadius: 12,
+      alignItems: "center",
+    },
+    rangeCtaText: { fontSize: 16, fontWeight: "600", color: colors.primaryText },
   });
 }

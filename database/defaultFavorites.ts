@@ -26,7 +26,8 @@ const BOOK_ORDER = [
 ] as const;
 
 function bookIndex(book_name: string): number {
-  const i = BOOK_ORDER.indexOf(book_name as (typeof BOOK_ORDER)[number]);
+  const normalized = book_name === "Psalms" ? "Psalm" : book_name;
+  const i = BOOK_ORDER.indexOf(normalized as (typeof BOOK_ORDER)[number]);
   return i === -1 ? 999 : i;
 }
 

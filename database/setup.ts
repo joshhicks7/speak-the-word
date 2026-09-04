@@ -2,19 +2,30 @@ import * as SQLite from "expo-sqlite";
 import { GameVerse } from "../types/verse";
 import { isDefaultFavorite } from "./defaultFavorites";
 
-// Use full ASV from bible-memory (copy ASV.json into this folder) or fallback
-let bibleData: { verses: Array<{ book_name: string; book: number; chapter: number; verse: number; text: string }> };
-try {
-  bibleData = require("./ASV.json");
-} catch {
-  bibleData = { verses: [] };
-}
+type BibleVerse = {
+  book_name: string;
+  book: number;
+  chapter: number;
+  verse: number;
+  text: string;
+};
 
 let database: SQLite.SQLiteDatabase | null = null;
 
+async function openSeededDatabase(): Promise<SQLite.SQLiteDatabase> {
+  try {
+    await SQLite.importDatabaseFromAssetAsync("bible.db", {
+      assetId: require("./bible-seed.db") as number,
+    });
+  } catch {
+    // Asset missing, web, or copy unsupported — JSON populate is the fallback.
+  }
+  return SQLite.openDatabaseAsync("bible.db");
+}
+
 export const getDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   if (!database) {
-    database = await SQLite.openDatabaseAsync("bible.db");
+    database = await openSeededDatabase();
   }
   return database;
 };
@@ -22,11 +33,12 @@ export const getDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
 export const setupDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   const db = await getDatabase();
   await createTables(db);
-  await createIndexes(db);
+  await ensureVerseProgressColumns(db);
   const count = await getVerseCount(db);
-  if (count === 0 && bibleData.verses.length > 0) {
+  if (count === 0) {
     await populateVerses(db);
   }
+  await createIndexes(db);
   return db;
 };
 
@@ -55,7 +67,6 @@ const createTables = async (db: SQLite.SQLiteDatabase): Promise<void> => {
       metadata TEXT
     )
   `);
-  await ensureVerseProgressColumns(db);
 };
 
 const ensureVerseProgressColumns = async (db: SQLite.SQLiteDatabase): Promise<void> => {
@@ -84,13 +95,13 @@ const ensureVerseProgressColumns = async (db: SQLite.SQLiteDatabase): Promise<vo
 };
 
 const createIndexes = async (db: SQLite.SQLiteDatabase): Promise<void> => {
-  await db.execAsync("CREATE INDEX IF NOT EXISTS idx_verse_id ON verses(id)");
-  await db.execAsync("CREATE INDEX IF NOT EXISTS idx_book_chapter_verse ON verses(book, chapter, verse)");
-  await db.execAsync("CREATE INDEX IF NOT EXISTS idx_favorites ON verses(is_favorite)");
-  await db.execAsync("CREATE INDEX IF NOT EXISTS idx_completed_at ON verses(completed_at)");
-  await db.execAsync("CREATE INDEX IF NOT EXISTS idx_text ON verses(text)");
-  await db.execAsync("CREATE INDEX IF NOT EXISTS idx_user_actions_type_created ON user_actions(action_type, created_at)");
-  await db.execAsync("CREATE INDEX IF NOT EXISTS idx_user_actions_verse ON user_actions(verse_id)");
+  await db.execAsync(`
+    CREATE INDEX IF NOT EXISTS idx_book_chapter_verse ON verses(book, chapter, verse);
+    CREATE INDEX IF NOT EXISTS idx_favorites ON verses(is_favorite);
+    CREATE INDEX IF NOT EXISTS idx_completed_at ON verses(completed_at);
+    CREATE INDEX IF NOT EXISTS idx_user_actions_type_created ON user_actions(action_type, created_at);
+    CREATE INDEX IF NOT EXISTS idx_user_actions_verse ON user_actions(verse_id);
+  `);
 };
 
 const getVerseCount = async (db: SQLite.SQLiteDatabase): Promise<number> => {
@@ -98,22 +109,55 @@ const getVerseCount = async (db: SQLite.SQLiteDatabase): Promise<number> => {
   return result[0]?.count ?? 0;
 };
 
+function loadBibleVerses(): BibleVerse[] {
+  try {
+    const bibleData = require("./ASV.json") as { verses: BibleVerse[] };
+    return bibleData.verses ?? [];
+  } catch {
+    return [];
+  }
+}
+
+const ROWS_PER_INSERT = 50;
+
 const populateVerses = async (db: SQLite.SQLiteDatabase): Promise<void> => {
-  const batchSize = 1000;
-  const totalVerses = bibleData.verses.length;
-  for (let i = 0; i < totalVerses; i += batchSize) {
-    const batch = bibleData.verses.slice(i, i + batchSize);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const verses = loadBibleVerses();
+  if (verses.length === 0) return;
+
+  const rows: (string | number)[][] = [];
+  for (const verse of verses) {
+    if (verse.text.toLowerCase() === "(ommitted)" || verse.text.length < 1) continue;
+    rows.push([
+      `${verse.book_name.toLowerCase()}-${verse.chapter}-${verse.verse}`,
+      verse.book_name,
+      verse.book,
+      verse.chapter,
+      verse.verse,
+      verse.text,
+      isDefaultFavorite(verse.book_name, verse.chapter, verse.verse) ? 1 : 0,
+    ]);
+  }
+
+  await db.execAsync(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = OFF;
+    PRAGMA temp_store = MEMORY;
+  `);
+
+  try {
     await db.withTransactionAsync(async () => {
-      for (const verse of batch) {
-        if (verse.text.toLowerCase() === "(ommitted)" || verse.text.length < 1) continue;
-        const verseId = `${verse.book_name.toLowerCase()}-${verse.chapter}-${verse.verse}`;
-        const favorite = isDefaultFavorite(verse.book_name, verse.chapter, verse.verse);
+      for (let i = 0; i < rows.length; i += ROWS_PER_INSERT) {
+        const batch = rows.slice(i, i + ROWS_PER_INSERT);
+        const placeholders = batch.map(() => "(?, ?, ?, ?, ?, ?, ?)").join(",");
         await db.runAsync(
-          `INSERT OR IGNORE INTO verses (id, book_name, book, chapter, verse, text, is_favorite) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [verseId, verse.book_name, verse.book, verse.chapter, verse.verse, verse.text, favorite ? 1 : 0]
+          `INSERT OR IGNORE INTO verses (id, book_name, book, chapter, verse, text, is_favorite) VALUES ${placeholders}`,
+          batch.flat()
         );
       }
     });
+  } finally {
+    await db.execAsync("PRAGMA synchronous = NORMAL;");
   }
 };
 

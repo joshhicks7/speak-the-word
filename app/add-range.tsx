@@ -151,15 +151,15 @@ export default function AddRangeScreen() {
 
   const handleAddRange = useCallback(async () => {
     if (!positionLessOrEqual(start, end)) {
-      Alert.alert("Invalid range", "From must be before or equal to To.");
+      Alert.alert("Choose a starting verse first", "The first verse needs to come before the last.");
       return;
     }
     setSaving(true);
     try {
       await setRangeFavorites(start, end, true);
-      Alert.alert("Done", "Range added to your challenges.", [{ text: "OK", onPress: () => router.back() }]);
+      Alert.alert("Added", "This passage is in My Challenges.", [{ text: "OK", onPress: () => router.back() }]);
     } catch {
-      Alert.alert("Error", "Could not add range.");
+      Alert.alert("Couldn't add that passage", "Please try again.");
     } finally {
       setSaving(false);
     }
@@ -196,14 +196,14 @@ export default function AddRangeScreen() {
       >
         <Text style={styles.previewTitle}>Preview</Text>
         {!positionLessOrEqual(start, end) ? (
-          <Text style={styles.previewInvalid}>From must be before or equal to To.</Text>
+          <Text style={styles.previewInvalid}>The first verse needs to come before the last.</Text>
         ) : previewLoading ? (
           <View style={styles.previewLoading}>
             <ActivityIndicator size="small" color={colors.primary} />
             <Text style={styles.previewLoadingText}>Loading verses…</Text>
           </View>
         ) : previewVerses.length === 0 ? (
-          <Text style={styles.previewEmpty}>No verses in range.</Text>
+          <Text style={styles.previewEmpty}>No verses in this passage.</Text>
         ) : (
           <View style={styles.previewList}>
             {previewVerses.map((v) => (
@@ -213,7 +213,7 @@ export default function AddRangeScreen() {
               </View>
             ))}
             {previewHasMore && (
-              <Text style={styles.previewMore}>…and more verses in range (first {PREVIEW_LIMIT} shown)</Text>
+              <Text style={styles.previewMore}>…and more (first {PREVIEW_LIMIT} shown)</Text>
             )}
           </View>
         )}
@@ -230,7 +230,7 @@ export default function AddRangeScreen() {
           ) : (
             <>
               <Ionicons name="add-circle" size={22} color={colors.primaryText} />
-              <Text style={styles.addBtnText}>Add range to challenges</Text>
+              <Text style={styles.addBtnText}>Add this passage</Text>
             </>
           )}
         </TouchableOpacity>
@@ -245,7 +245,9 @@ export default function AddRangeScreen() {
         <View style={styles.modalContent}>
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>
-              {pickerTarget === "start" ? "From" : "To"} – {step}
+              {pickerTarget === "start" ? "Starting verse" : "Ending verse"}
+              {" · "}
+              {step === "book" ? "Book" : step === "chapter" ? "Chapter" : "Verse"}
             </Text>
             <TouchableOpacity onPress={() => setModal(null)}>
               <Text style={styles.modalClose}>Done</Text>
