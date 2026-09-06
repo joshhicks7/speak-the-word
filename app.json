@@ -18,6 +18,7 @@
       "infoPlist": {
         "NSSpeechRecognitionUsageDescription": "Speak the Word uses speech recognition so it can check the verse you recite.",
         "NSMicrophoneUsageDescription": "Speak the Word uses the microphone so you can recite Scripture aloud.",
+        "NSPhotoLibraryUsageDescription": "Speak the Word does not access your photos. This description is required because a linked library references photo library APIs.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
