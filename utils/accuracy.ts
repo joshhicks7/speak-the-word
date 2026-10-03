@@ -1,3 +1,5 @@
+import { STT_WORD_ALIASES } from "./sttWordAliases";
+
 /** Digit / ordinal forms speech-to-text and typing often produce instead of spelled numbers. */
 const NUMBER_WORDS: Record<string, string> = {
   "0": "zero",
@@ -61,7 +63,6 @@ const SPELLING_ALIASES: Record<string, string> = {
   color: "colour",
   colors: "colours",
   toward: "towards",
-  oh: "o",
 };
 
 function expandContractions(text: string): string {
@@ -82,6 +83,8 @@ function expandContractions(text: string): string {
 
 function canonicalWord(word: string): string {
   if (NUMBER_WORDS[word]) return NUMBER_WORDS[word];
+  const stt = STT_WORD_ALIASES[word];
+  if (stt) return stt;
   if (SPELLING_ALIASES[word]) return SPELLING_ALIASES[word];
   return word;
 }
@@ -138,8 +141,13 @@ const EXTRA_WORD_TOLERANCE_RATIO = 0.2;
 /** True if spoken word counts as correct for expected (exact or within typo tolerance). */
 function wordsMatch(expected: string, spoken: string): boolean {
   if (expected === spoken) return true;
-  if (expected.length < MIN_LENGTH_FOR_FUZZY || spoken.length < MIN_LENGTH_FOR_FUZZY) return false;
   if (Math.abs(expected.length - spoken.length) > MAX_EDIT_DISTANCE) return false;
+  const longer = Math.max(expected.length, spoken.length);
+  if (longer < 3) return false;
+  if (expected.length >= MIN_LENGTH_FOR_FUZZY && spoken.length >= MIN_LENGTH_FOR_FUZZY) {
+    return levenshtein(expected, spoken) <= MAX_EDIT_DISTANCE;
+  }
+  // STT homophones / drop letter: e.g. wept vs wet
   return levenshtein(expected, spoken) <= MAX_EDIT_DISTANCE;
 }
 

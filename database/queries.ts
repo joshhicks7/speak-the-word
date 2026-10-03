@@ -1,5 +1,8 @@
 import { GameVerse } from "../types/verse";
+import { buildFtsMatchQuery, normalizeSearchQuery } from "../lib/verseSearchNormalize";
 import { getDatabase, rowToGameVerse } from "./setup";
+import { addUserFavoriteIds, removeUserFavoriteIds } from "../utils/userFavorites";
+import { PRACTICE_ELIGIBLE_WHERE } from "./verseEligibility";
 
 export type UserActionType =
   | "attempted_verse"
@@ -85,7 +88,7 @@ export const getFavoriteVerses = async (): Promise<GameVerse[]> => {
 export const getNextUncompletedVerse = async (): Promise<GameVerse | null> => {
   const db = await getDatabase();
   const result = await db.getFirstAsync(
-    "SELECT * FROM verses WHERE completed_at IS NULL ORDER BY length(text), book, chapter, verse LIMIT 1"
+    `SELECT * FROM verses WHERE completed_at IS NULL AND ${PRACTICE_ELIGIBLE_WHERE} ORDER BY length(text), book, chapter, verse LIMIT 1`
   );
   return result ? rowToGameVerse(result as Record<string, unknown>) : null;
 };
@@ -93,7 +96,7 @@ export const getNextUncompletedVerse = async (): Promise<GameVerse | null> => {
 export const getUncompletedVersesOrdered = async (limit: number = 50): Promise<GameVerse[]> => {
   const db = await getDatabase();
   const result = await db.getAllAsync(
-    "SELECT * FROM verses WHERE completed_at IS NULL ORDER BY length(text), book, chapter, verse LIMIT ?",
+    `SELECT * FROM verses WHERE completed_at IS NULL AND ${PRACTICE_ELIGIBLE_WHERE} ORDER BY length(text), book, chapter, verse LIMIT ?`,
     [limit]
   );
   return result.map((r) => rowToGameVerse(r as Record<string, unknown>));
@@ -132,7 +135,7 @@ export const getCompletionStats = async (): Promise<{
 }> => {
   const db = await getDatabase();
   const result = await db.getFirstAsync<{ total: number; completed: number }>(
-    "SELECT COUNT(*) as total, SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses"
+    `SELECT COUNT(*) as total, SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses WHERE ${PRACTICE_ELIGIBLE_WHERE}`
   );
   return { total: result?.total ?? 0, completed: result?.completed ?? 0 };
 };
@@ -147,7 +150,7 @@ export const getLearningStats = async (): Promise<{
   const db = await getDatabase();
   const [countResult, mostBookResult, perfectResult] = await Promise.all([
     db.getFirstAsync<{ total: number; completed: number }>(
-      "SELECT COUNT(*) as total, SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses"
+      `SELECT COUNT(*) as total, SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses WHERE ${PRACTICE_ELIGIBLE_WHERE}`
     ),
     db.getFirstAsync<{ book_name: string }>(
       "SELECT book_name FROM verses WHERE completed_at IS NOT NULL GROUP BY book ORDER BY COUNT(*) DESC LIMIT 1"
@@ -248,11 +251,43 @@ export const getVersesInRange = async (
 export const getNextGameVerse = async (currentVerseId: string): Promise<GameVerse | null> => {
   const db = await getDatabase();
   const allVerses = await db.getAllAsync(
-    "SELECT * FROM verses ORDER BY length(text), book, chapter, verse"
+    `SELECT * FROM verses WHERE ${PRACTICE_ELIGIBLE_WHERE} ORDER BY length(text), book, chapter, verse`
   );
   const currentIndex = allVerses.findIndex((v) => (v as Record<string, unknown>).id === currentVerseId);
   if (currentIndex === -1 || currentIndex === allVerses.length - 1) return null;
   return rowToGameVerse(allVerses[currentIndex + 1] as Record<string, unknown>);
+};
+
+export const searchVersesByText = async (query: string, limit: number = 25): Promise<GameVerse[]> => {
+  const db = await getDatabase();
+  const normalized = normalizeSearchQuery(query);
+  if (!normalized) return [];
+
+  const ftsQuery = buildFtsMatchQuery(normalized);
+  if (ftsQuery) {
+    try {
+      const ftsRows = await db.getAllAsync(
+        `SELECT v.* FROM verses_fts AS f
+         JOIN verses v ON v.id = f.id
+         WHERE f MATCH ?
+         ORDER BY rank
+         LIMIT ?`,
+        [ftsQuery, limit]
+      );
+      if (ftsRows.length > 0) {
+        return ftsRows.map((r) => rowToGameVerse(r as Record<string, unknown>));
+      }
+    } catch {
+      // fall through to LIKE
+    }
+  }
+
+  const like = `%${normalized.replace(/%/g, "")}%`;
+  const likeRows = await db.getAllAsync(
+    `SELECT * FROM verses WHERE text LIKE ? ORDER BY length(text), book, chapter, verse LIMIT ?`,
+    [like, limit]
+  );
+  return likeRows.map((r) => rowToGameVerse(r as Record<string, unknown>));
 };
 
 export type BibleBook = { book: number; book_name: string };
@@ -285,23 +320,39 @@ export const getVersesByChapter = async (
 
 export const toggleFavorite = async (id: string): Promise<void> => {
   const db = await getDatabase();
+  const row = await db.getFirstAsync<{ is_favorite: number }>(
+    "SELECT is_favorite FROM verses WHERE id = ?",
+    [id]
+  );
+  const wasFavorite = row?.is_favorite === 1;
   await db.runAsync(
     "UPDATE verses SET is_favorite = CASE WHEN is_favorite = 1 THEN 0 ELSE 1 END WHERE id = ?",
     [id]
   );
+  if (wasFavorite) await removeUserFavoriteIds([id]);
+  else await addUserFavoriteIds([id]);
 };
 
 export const setFavorite = async (id: string, isFavorite: boolean): Promise<void> => {
   const db = await getDatabase();
   await db.runAsync("UPDATE verses SET is_favorite = ? WHERE id = ?", [isFavorite ? 1 : 0, id]);
+  if (isFavorite) await addUserFavoriteIds([id]);
+  else await removeUserFavoriteIds([id]);
 };
 
 export const setChapterFavorites = async (book: number, chapter: number, isFavorite: boolean): Promise<void> => {
   const db = await getDatabase();
+  const rows = await db.getAllAsync<{ id: string }>(
+    "SELECT id FROM verses WHERE book = ? AND chapter = ?",
+    [book, chapter]
+  );
   await db.runAsync(
     "UPDATE verses SET is_favorite = ? WHERE book = ? AND chapter = ?",
     [isFavorite ? 1 : 0, book, chapter]
   );
+  const ids = rows.map((r) => r.id);
+  if (isFavorite) await addUserFavoriteIds(ids);
+  else await removeUserFavoriteIds(ids);
 };
 
 export const setRangeFavorites = async (
@@ -311,7 +362,10 @@ export const setRangeFavorites = async (
 ): Promise<void> => {
   const verses = await getVersesInRange(start, end);
   const db = await getDatabase();
+  const ids = verses.map((v) => v.id);
   for (const v of verses) {
     await db.runAsync("UPDATE verses SET is_favorite = ? WHERE id = ?", [isFavorite ? 1 : 0, v.id]);
   }
+  if (isFavorite) await addUserFavoriteIds(ids);
+  else await removeUserFavoriteIds(ids);
 };

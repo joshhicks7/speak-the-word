@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -15,8 +15,24 @@ import {
   getNextUncompletedVerse,
   getCompletedVersesOrdered,
   getLearningStats,
+  getBooks,
+  setFavorite,
+  type BibleBook,
 } from "../../database/queries";
 import type { GameVerse } from "../../types/verse";
+import { CommandMicListener } from "../../components/CommandMicListener";
+import { HubPendingVerseBanner } from "../../components/HubPendingVerseBanner";
+import { useAppVoice } from "../../context/AppVoiceProvider";
+import speechWrapper from "../../lib/speechRecognitionWrapper";
+import { processHubVerseVoice } from "../../lib/hubVerseVoice";
+import {
+  isBareLevelsStartCommand,
+  parseGlobalCommand,
+} from "../../lib/voiceCommands";
+import {
+  looksLikeScriptureReferenceAttempt,
+  utteranceContainsScriptureReference,
+} from "../../lib/parseScriptureReference";
 
 export default function LevelsScreen() {
   const router = useRouter();
@@ -27,6 +43,34 @@ export default function LevelsScreen() {
   const [completed, setCompleted] = useState<GameVerse[]>([]);
   const [stats, setStats] = useState({ completed: 0, percent: 0 });
   const [loading, setLoading] = useState(true);
+  const [levelsVoiceListen, setLevelsVoiceListen] = useState(false);
+  const [pendingVerse, setPendingVerse] = useState<GameVerse | null>(null);
+  const [pendingPracticeVerseIds, setPendingPracticeVerseIds] = useState<string[] | null>(null);
+  const [bibleBooks, setBibleBooks] = useState<BibleBook[]>([]);
+  const { prefs, speak, stopSpeak, setEnabled, speechActive } = useAppVoice();
+  const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
+
+  const announceLevels = useCallback(
+    async (next: GameVerse | null, completedCount: number) => {
+      if (!handsFree) return;
+      if (prefs.speakScreenContext) {
+        const progress =
+          completedCount === 0
+            ? "Ready to begin."
+            : completedCount === 1
+              ? "1 verse completed."
+              : `${completedCount} verses completed.`;
+        const nextLine = next
+          ? `Next level: ${next.reference}. Say play or start, tap the card, or say a verse reference.`
+          : "You have completed every verse.";
+        await speak(
+          `Levels. ${progress} ${nextLine} Or say a verse reference, like Matthew 6 33. Say home, my challenges, or settings.`
+        );
+      }
+      setLevelsVoiceListen(true);
+    },
+    [handsFree, prefs.speakScreenContext, speak]
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -39,12 +83,23 @@ export default function LevelsScreen() {
     setCompleted(completedList);
     setStats({ completed: learning.completed, percent: learning.percent });
     setLoading(false);
+    void announceLevels(next, learning.completed);
+  }, [announceLevels]);
+
+  useEffect(() => {
+    void getBooks().then(setBibleBooks);
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       load();
-    }, [load])
+      return () => {
+        stopSpeak();
+        setLevelsVoiceListen(false);
+        setPendingVerse(null);
+        setPendingPracticeVerseIds(null);
+      };
+    }, [load, stopSpeak])
   );
 
   const openVerse = useCallback(
@@ -55,6 +110,48 @@ export default function LevelsScreen() {
       });
     },
     [router]
+  );
+
+  const handleLevelsVoice = useCallback(
+    async (text: string) => {
+      await processHubVerseVoice(text, {
+        bibleBooks,
+        pendingVerse,
+        setPendingVerse,
+        pendingPracticeVerseIds,
+        setPendingPracticeVerseIds,
+        router,
+        speak,
+        stopSpeak,
+        setListening: setLevelsVoiceListen,
+        practiceSource: "levels",
+        onAddToChallenges: async (v, verseIds) => {
+          const ids = verseIds?.length ? verseIds : [v.id];
+          await Promise.all(ids.map((id) => setFavorite(id, true)));
+        },
+        onHandsFreeOff: async () => {
+          await setEnabled(false);
+        },
+        handleBeforeFallback: async (spoken) => {
+          const refOpts = { defaultBook: pendingVerse?.book };
+          const hasReference =
+            utteranceContainsScriptureReference(spoken, bibleBooks, refOpts) ||
+            looksLikeScriptureReferenceAttempt(spoken);
+          if (!hasReference && isBareLevelsStartCommand(spoken)) {
+            if (nextVerse) openVerse(nextVerse.id);
+            else await speak("No next verse. Try my challenges.");
+            setLevelsVoiceListen(true);
+            return true;
+          }
+          if (parseGlobalCommand(spoken) === "today") {
+            router.push("/(tabs)");
+            return true;
+          }
+          return false;
+        },
+      });
+    },
+    [bibleBooks, pendingVerse, pendingPracticeVerseIds, nextVerse, openVerse, router, speak, stopSpeak, setEnabled]
   );
 
   if (loading) {
@@ -78,7 +175,14 @@ export default function LevelsScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: Math.max(insets.top, 16) }]}
+      accessibilityLiveRegion="polite"
     >
+      <CommandMicListener
+        active={handsFree && levelsVoiceListen && !speechActive}
+        verseMenuPending={pendingVerse != null}
+        onTranscript={(t) => void handleLevelsVoice(t)}
+      />
+      {pendingVerse ? <HubPendingVerseBanner reference={pendingVerse.reference} /> : null}
       <View style={styles.header}>
         <Text style={styles.title}>Levels</Text>
         <Text style={styles.progressLabel}>{progressLabel}</Text>

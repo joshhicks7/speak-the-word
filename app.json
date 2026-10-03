@@ -24,12 +24,24 @@
     },
     "android": {
       "softwareKeyboardLayoutMode": "resize",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            {
+              "scheme": "speaktheword"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#0B1E4A",
         "foregroundImage": "./assets/android-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
+        "android.permission.RECORD_AUDIO",
         "android.permission.RECORD_AUDIO"
       ],
       "package": "com.jagoalt.speaktheword"
@@ -64,6 +76,12 @@
         "projectId": "9250772c-fda5-4d89-9255-a79c13daefd5"
       }
     },
-    "owner": "josephfitz7"
+    "owner": "josephfitz7",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/9250772c-fda5-4d89-9255-a79c13daefd5"
+    }
   }
 }

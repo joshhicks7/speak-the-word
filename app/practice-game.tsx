@@ -1,5 +1,5 @@
 import * as Haptics from "expo-haptics";
-import { useLocalSearchParams, useRouter, useNavigation } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter, useNavigation } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -34,8 +34,23 @@ import {
   toggleFavorite,
   setFavorite,
 } from "../database/queries";
+import { CoachBanner } from "../components/CoachBanner";
+import { CommandMicListener } from "../components/CommandMicListener";
+import { useAppVoice } from "../context/AppVoiceProvider";
 import speechWrapper from "../lib/speechRecognitionWrapper";
+import { ensureVoiceAudioMode } from "../lib/voiceCue";
+import { isSpeaking } from "../lib/voiceFeedback";
+import {
+  isPracticeExitPhrase,
+  parseInterruptSpeechCommand,
+  parsePracticeResultCommand,
+  parseVoiceCommand,
+  type VoiceIntent,
+} from "../lib/voiceCommands";
+import { shouldAutoSubmit, DEFAULT_RECITE_LISTENING_CONFIG } from "../lib/reciteListening";
+import { buildVerseContextualStrings } from "../lib/verseContextualStrings";
 import { computeAccuracy, type AccuracyResult } from "../utils/accuracy";
+import { setWelcomeComplete } from "../utils/onboarding";
 import type { GameVerse } from "../types/verse";
 
 type Phase = "memorize" | "recite" | "result";
@@ -68,16 +83,22 @@ export default function PracticeGameScreen() {
     verseIds?: string;
     currentIndex?: string;
     source?: string;
+    rangeMode?: string;
   }>();
   const router = useRouter();
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
-  const { verseId, mode, verseIds, currentIndex, source } = params;
+  const { verseId, mode, verseIds, currentIndex, source, rangeMode: rangeModeParam } = params;
+  const voiceOpenedEntireRange = rangeModeParam === "entire";
   /** Preserved when chaining Next so deep links can prefer type if we add it later. */
   const navigationMode = mode === "type" ? "type" : "speech";
   const isVotd = source === "votd";
   const isIntro = source === "intro";
-  const passPercent = isIntro ? 75 : 80;
+  const isWelcomeDemo = source === "welcome-demo";
+  const passPercent = isIntro || isWelcomeDemo ? 75 : 80;
+  const { prefs: voicePrefs, speak, playCue, stopSpeak, getSpeechGeneration, speechActive } =
+    useAppVoice();
+  const handsFree = voicePrefs.handsFreeEnabled && speechWrapper.available;
   const colors = useThemeColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
   const verseIdsList = verseIds ? verseIds.split(",").filter(Boolean) : [];
@@ -90,11 +111,19 @@ export default function PracticeGameScreen() {
   const [selectedRangeIndex, setSelectedRangeIndex] = useState<number | null>(null);
   const [showVerseByVersePicker, setShowVerseByVersePicker] = useState(false);
   const [phase, setPhase] = useState<Phase>("memorize");
+  const phaseRef = useRef<Phase>("memorize");
+  phaseRef.current = phase;
   const [loading, setLoading] = useState(true);
   const [score, setScore] = useState<AccuracyResult | null>(null);
   const [whatYouSaid, setWhatYouSaid] = useState("");
   const [hintCount, setHintCount] = useState(0);
   const [streakCongrats, setStreakCongrats] = useState<{ currentStreak: number } | null>(null);
+  const [coachMessage, setCoachMessage] = useState<string | null>(null);
+  const [commandListen, setCommandListen] = useState(false);
+  const [reciteListeningReady, setReciteListeningReady] = useState(false);
+  const [reciteUseType, setReciteUseType] = useState(navigationMode === "type");
+  const [reciteSession, setReciteSession] = useState(0);
+  const handsFreeFlowStarted = useRef(false);
   const startTime = useRef<number>(0);
   const contentOpacity = useRef(new Animated.Value(1)).current;
   const resultScale = useRef(new Animated.Value(0.85)).current;
@@ -153,6 +182,10 @@ export default function PracticeGameScreen() {
           if (cameFromVerseByVerseNext) {
             setVerse(valid[idx]);
             setPracticeEntireRange(false);
+          } else if (handsFree && !voiceOpenedEntireRange) {
+            setVerse(valid[0]!);
+            setPracticeEntireRange(false);
+            setSelectedRangeIndex(0);
           } else {
             setVerse(buildCombinedVerse(valid));
             setPracticeEntireRange(true);
@@ -168,21 +201,52 @@ export default function PracticeGameScreen() {
         setLoading(false);
       });
     }
-  }, [verseId, verseIdsList.join(","), buildCombinedVerse]);
+  }, [verseId, verseIdsList.join(","), buildCombinedVerse, handsFree, voiceOpenedEntireRange]);
 
-  const leaveIntroToHome = useCallback(() => {
+  const leaveIntroToHome = useCallback(async () => {
+    if (isWelcomeDemo) await setWelcomeComplete();
     router.replace("/(tabs)");
-  }, [router]);
+  }, [router, isWelcomeDemo]);
+
+  const exitPractice = useCallback(() => {
+    setStreakCongrats(null);
+    if (isIntro || isWelcomeDemo) {
+      void leaveIntroToHome();
+      return;
+    }
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace("/(tabs)");
+    }
+  }, [isIntro, isWelcomeDemo, leaveIntroToHome, router]);
+
+  useEffect(() => {
+    handsFreeFlowStarted.current = false;
+    setCommandListen(false);
+    stopSpeak();
+  }, [verse?.id, stopSpeak]);
+
+  useEffect(() => {
+    if (!isWelcomeDemo) return;
+    if (phase === "memorize") {
+      setCoachMessage("Here's your first verse. Read it, then tap Speak the Word when you're ready to recite.");
+    } else if (phase === "recite") {
+      setCoachMessage(null);
+    } else if (phase === "result") {
+      setCoachMessage("Nice! That's how practice works. Continue to Home when ready.");
+    }
+  }, [isWelcomeDemo, phase]);
 
   useEffect(() => {
     if (isVotd) {
       navigation.setOptions({ title: "Verse of the Day" });
-    } else if (isIntro) {
+    } else if (isIntro || isWelcomeDemo) {
       navigation.setOptions({
         title: "Your first verse",
         headerLeft: () => (
           <Pressable
-            onPress={leaveIntroToHome}
+            onPress={() => void leaveIntroToHome()}
             hitSlop={12}
             style={{ paddingHorizontal: 4, marginLeft: Platform.OS === "ios" ? 0 : 4 }}
             accessibilityRole="button"
@@ -193,7 +257,7 @@ export default function PracticeGameScreen() {
         ),
       });
     }
-  }, [isVotd, isIntro, navigation, leaveIntroToHome, colors.text]);
+  }, [isVotd, isIntro, isWelcomeDemo, navigation, leaveIntroToHome, colors.text]);
 
   useEffect(() => {
     if (phase === "result") {
@@ -225,6 +289,10 @@ export default function PracticeGameScreen() {
   }, [phase, resultScale, resultOpacity, reviewCardOpacity]);
 
   const handleReady = useCallback(() => {
+    if (phaseRef.current !== "memorize") return;
+    stopSpeak();
+    setCommandListen(false);
+    handsFreeFlowStarted.current = true;
     contentOpacity.setValue(1);
     Animated.timing(contentOpacity, {
       toValue: 0,
@@ -232,13 +300,108 @@ export default function PracticeGameScreen() {
       useNativeDriver: true,
     }).start(({ finished }) => {
       if (finished) {
+        setReciteSession((s) => s + 1);
+        setReciteUseType(navigationMode === "type");
         setPhase("recite");
         setHintCount(0);
         startTime.current = Date.now();
         Animated.timing(contentOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
       }
     });
-  }, [contentOpacity]);
+  }, [contentOpacity, stopSpeak, navigationMode]);
+
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        stopSpeak();
+        setCommandListen(false);
+      };
+    }, [stopSpeak])
+  );
+
+  const speakPassagePreview = useCallback(
+    async (runGen: number) => {
+      const alive = () => getSpeechGeneration() === runGen;
+      if (!alive() || !verse) return;
+
+      const isMultiPassage =
+        practiceEntireRange && rangeVerses != null && rangeVerses.length > 1;
+
+      if (isMultiPassage) {
+        if (!voicePrefs.readFullVerse) {
+          await speak(`${verse.reference}.`);
+          return;
+        }
+        if (voicePrefs.announceEachVerseWhenReading) {
+          for (const v of rangeVerses) {
+            if (!alive()) return;
+            await speak(`${v.reference}. ${v.text}`);
+          }
+          return;
+        }
+        await speak(`${verse.reference}. ${verse.text}`);
+        return;
+      }
+
+      const preview = voicePrefs.readFullVerse
+        ? `${verse.reference}. ${verse.text}`
+        : `${verse.reference}.`;
+      await speak(preview);
+    },
+    [
+      practiceEntireRange,
+      rangeVerses,
+      verse,
+      voicePrefs.readFullVerse,
+      voicePrefs.announceEachVerseWhenReading,
+      speak,
+      getSpeechGeneration,
+    ]
+  );
+
+  useEffect(() => {
+    if (isWelcomeDemo || !handsFree || !verse || loading || phase !== "memorize") return;
+    if (handsFreeFlowStarted.current) return;
+    handsFreeFlowStarted.current = true;
+    void (async () => {
+      const runGen = getSpeechGeneration();
+      await speakPassagePreview(runGen);
+      if (getSpeechGeneration() !== runGen) {
+        handsFreeFlowStarted.current = false;
+        if (phaseRef.current === "memorize") setCommandListen(true);
+        return;
+      }
+      if (voicePrefs.micStartMode === "startPhrase") {
+        await speak("Say begin when ready.");
+        if (getSpeechGeneration() !== runGen) {
+          handsFreeFlowStarted.current = false;
+          if (phaseRef.current === "memorize") setCommandListen(true);
+          return;
+        }
+        setCommandListen(true);
+        return;
+      }
+      await playCue();
+      if (getSpeechGeneration() !== runGen) {
+        handsFreeFlowStarted.current = false;
+        return;
+      }
+      if (phaseRef.current !== "memorize") return;
+      handleReady();
+    })();
+  }, [
+    isWelcomeDemo,
+    handsFree,
+    verse,
+    loading,
+    phase,
+    voicePrefs.micStartMode,
+    speak,
+    playCue,
+    handleReady,
+    speakPassagePreview,
+    getSpeechGeneration,
+  ]);
 
   const handlePracticeVerseByVerse = useCallback(() => {
     if (!rangeVerses?.length) return;
@@ -281,12 +444,13 @@ export default function PracticeGameScreen() {
   }, [verse, practiceEntireRange, rangeVerses, buildCombinedVerse]);
 
   const handleNext = useCallback(async () => {
-    if (isIntro) {
-      leaveIntroToHome();
+    setStreakCongrats(null);
+    if (isIntro || isWelcomeDemo) {
+      await leaveIntroToHome();
       return;
     }
     if (practiceEntireRange) {
-      router.back();
+      exitPractice();
       return;
     }
     // From My Challenges (verseIds passed): only go to next verse in this challenge, then back
@@ -299,7 +463,7 @@ export default function PracticeGameScreen() {
           params: { verseId: nextId, mode: navigationMode, verseIds, currentIndex: String(idx + 1) },
         });
       } else {
-        router.back();
+        exitPractice();
       }
       return;
     }
@@ -312,12 +476,130 @@ export default function PracticeGameScreen() {
           params: { verseId: v.id, mode: navigationMode },
         });
       } else {
-        router.back();
+        exitPractice();
       }
     } else {
-      router.back();
+      exitPractice();
     }
-  }, [verse, verseIdsList, currentIdx, selectedRangeIndex, verseIds, navigationMode, practiceEntireRange, isIntro, leaveIntroToHome, router]);
+  }, [verse, verseIdsList, currentIdx, selectedRangeIndex, verseIds, navigationMode, practiceEntireRange, isIntro, isWelcomeDemo, leaveIntroToHome, exitPractice, router]);
+
+  const resetToMemorize = useCallback(() => {
+    setStreakCongrats(null);
+    setPhase("memorize");
+    setScore(null);
+    setWhatYouSaid("");
+    setHintCount(0);
+    handsFreeFlowStarted.current = false;
+    setCommandListen(false);
+    setReciteUseType(navigationMode === "type");
+  }, [navigationMode]);
+
+  const switchReciteToType = useCallback(() => {
+    stopSpeak();
+    setCommandListen(false);
+    setReciteUseType(true);
+    setReciteSession((s) => s + 1);
+  }, [stopSpeak]);
+
+  const switchReciteToSpeech = useCallback(() => {
+    setReciteUseType(false);
+    setReciteSession((s) => s + 1);
+  }, []);
+
+  useEffect(() => {
+    if (phase !== "result") {
+      setStreakCongrats(null);
+    }
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase === "recite") {
+      setCommandListen(false);
+    }
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase !== "recite") {
+      setReciteListeningReady(false);
+      return;
+    }
+    if (speechActive) {
+      setReciteListeningReady(false);
+      return;
+    }
+    const timer = setTimeout(() => setReciteListeningReady(true), 500);
+    return () => clearTimeout(timer);
+  }, [phase, speechActive]);
+
+  const handleVoiceCommand = useCallback(
+    async (text: string) => {
+      if (parseInterruptSpeechCommand(text, { allowBareStop: speechActive })) {
+        stopSpeak();
+        handsFreeFlowStarted.current = false;
+        setCommandListen(true);
+        return;
+      }
+      const intent: VoiceIntent =
+        phase === "result" ? parsePracticeResultCommand(text) : parseVoiceCommand(text);
+      setCommandListen(false);
+      stopSpeak();
+      setStreakCongrats(null);
+      if (intent === "begin" && phase === "memorize") {
+        handleReady();
+        return;
+      }
+      if (intent === "home") {
+        exitPractice();
+        return;
+      }
+      if (intent === "again" || intent === "tryMore" || intent === "repeat") {
+        if (intent === "again") {
+          resetToMemorize();
+          return;
+        }
+        if (intent === "repeat" && verse) {
+          await speakPassagePreview(getSpeechGeneration());
+          await playCue();
+        } else {
+          await playCue();
+        }
+        setStreakCongrats(null);
+        setReciteSession((s) => s + 1);
+        setReciteUseType(navigationMode === "type");
+        setPhase("recite");
+        setScore(null);
+        startTime.current = Date.now();
+        return;
+      }
+      if (intent === "advance" || intent === "next" || intent === "continue") {
+        if (score && score.percent < passPercent) {
+          await speak("Pass this verse first, or say try again.");
+          setCommandListen(true);
+          return;
+        }
+        await handleNext();
+        return;
+      }
+      setCommandListen(false);
+      requestAnimationFrame(() => setCommandListen(true));
+    },
+    [
+      phase,
+      verse,
+      score,
+      passPercent,
+      handleNext,
+      handleReady,
+      exitPractice,
+      resetToMemorize,
+      speak,
+      playCue,
+      stopSpeak,
+      speechActive,
+      speakPassagePreview,
+      getSpeechGeneration,
+    ]
+  );
 
   const handleSpeechResult = useCallback(
     (s: AccuracyResult, transcript: string, inputMode: "speech" | "type") => {
@@ -363,7 +645,9 @@ export default function PracticeGameScreen() {
         }
       };
       checkNewStreakDay(recordAttempt).then((streak) => {
-        if (streak) setStreakCongrats(streak);
+        if (streak && phaseRef.current === "result") {
+          setStreakCongrats(streak);
+        }
       });
       if (passed) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -373,6 +657,21 @@ export default function PracticeGameScreen() {
     },
     [verse, practiceEntireRange, rangeVerses, isVotd, isIntro, passPercent, verseIdsList.length]
   );
+
+  useEffect(() => {
+    if (!handsFree || phase !== "result" || score == null) return;
+    void (async () => {
+      const passed = score.percent >= passPercent;
+      const summary = passed
+        ? `Nice work. ${score.percent} percent. ${score.correct} of ${score.total} words.`
+        : `Keep going. ${score.percent} percent.`;
+      const prompt = passed
+        ? "Say advance, try more, or done."
+        : "Say try again, try more, or done.";
+      await speak(`${summary} ${prompt}`);
+      setCommandListen(true);
+    })();
+  }, [handsFree, phase, score, passPercent, speak]);
 
   if (loading) {
     return (
@@ -389,10 +688,12 @@ export default function PracticeGameScreen() {
           This verse could not be loaded.
         </Text>
         <Pressable
-          onPress={() => (isIntro ? leaveIntroToHome() : router.back())}
+          onPress={() => exitPractice()}
           style={[styles.primaryBtn, { backgroundColor: colors.primary }]}
         >
-          <Text style={styles.primaryBtnText}>{isIntro ? "Continue to home" : "Go back"}</Text>
+          <Text style={styles.primaryBtnText}>
+            {isIntro || isWelcomeDemo ? "Continue to home" : "Go back"}
+          </Text>
         </Pressable>
       </View>
     );
@@ -439,6 +740,9 @@ export default function PracticeGameScreen() {
       ) : (
         <Text style={[styles.ref, { color: colors.primary }]}>{verse.reference}</Text>
       )}
+      {coachMessage && (phase === "memorize" || phase === "recite" || phase === "result") ? (
+        <CoachBanner message={coachMessage} colors={colors} />
+      ) : null}
       {phase === "memorize" && (
         <>
           <Text style={[styles.verseText, { color: colors.textSecondary }]}>{verse.text}</Text>
@@ -451,16 +755,18 @@ export default function PracticeGameScreen() {
             <Text style={styles.primaryBtnText}>Speak the Word</Text>
           </Pressable>
           {rangeVerses && rangeVerses.length > 1 && (
-            <Pressable
-              style={({ pressed }) => [styles.rangeModeBtn, { opacity: pressed ? 0.85 : 1 }]}
-              onPress={practiceEntireRange ? handlePracticeVerseByVerse : handlePracticeEntireRange}
-            >
-              <Text style={styles.rangeModeBtnText}>
-                {practiceEntireRange
-                  ? "One verse at a time"
-                  : `Speak the whole passage (${rangeVerses.length} verses)`}
-              </Text>
-            </Pressable>
+            <>
+              <Pressable
+                style={({ pressed }) => [styles.rangeModeBtn, { opacity: pressed ? 0.85 : 1 }]}
+                onPress={practiceEntireRange ? handlePracticeVerseByVerse : handlePracticeEntireRange}
+              >
+                <Text style={styles.rangeModeBtnText}>
+                  {practiceEntireRange
+                    ? "One verse at a time"
+                    : `Speak the whole passage (${rangeVerses.length} verses)`}
+                </Text>
+              </Pressable>
+            </>
           )}
         </>
       )}
@@ -496,23 +802,31 @@ export default function PracticeGameScreen() {
       </Modal>
       {phase === "recite" && (
         <>
-          <Text style={styles.reciteHint}>
-            Speak this verse. It's okay to use a hint.
-          </Text>
-          <Pressable
-            style={({ pressed }) => [styles.hintBtn, !canHint && styles.hintBtnDisabled, { opacity: canHint && pressed ? 0.8 : 1 }]}
-            onPress={() => canHint && setHintCount((c) => c + 1)}
-            disabled={!canHint}
-          >
-            <Text style={styles.hintBtnText}>
-              {canHint ? "Show next word" : "No more hints"}
-            </Text>
-          </Pressable>
-          {hintText.length > 0 && (
-            <View style={styles.hintBox}>
-              <Text style={styles.hintLabel}>Hint:</Text>
-              <Text style={styles.hintReveal}>{hintText}</Text>
-            </View>
+          {isWelcomeDemo ? (
+            <Text style={[styles.verseText, { color: colors.textSecondary }]}>{verse.text}</Text>
+          ) : (
+            <>
+              <Text style={styles.reciteHint}>Speak this verse. It's okay to use a hint.</Text>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.hintBtn,
+                  !canHint && styles.hintBtnDisabled,
+                  { opacity: canHint && pressed ? 0.8 : 1 },
+                ]}
+                onPress={() => canHint && setHintCount((c) => c + 1)}
+                disabled={!canHint}
+              >
+                <Text style={styles.hintBtnText}>
+                  {canHint ? "Show next word" : "No more hints"}
+                </Text>
+              </Pressable>
+              {hintText.length > 0 && (
+                <View style={styles.hintBox}>
+                  <Text style={styles.hintLabel}>Hint:</Text>
+                  <Text style={styles.hintReveal}>{hintText}</Text>
+                </View>
+              )}
+            </>
           )}
           {!speechWrapper.available ? (
             <View style={[styles.unsupported, { marginBottom: 16 }]}>
@@ -576,26 +890,23 @@ export default function PracticeGameScreen() {
           <View style={styles.resultButtonsCol}>
             <Pressable
               style={({ pressed }) => [styles.retryBtn, { transform: [{ scale: pressed ? 0.97 : 1 }] }]}
-              onPress={() => {
-                setPhase("memorize");
-                setScore(null);
-                setWhatYouSaid("");
-                setHintCount(0);
-              }}
+              onPress={() => resetToMemorize()}
             >
-              <Text style={styles.retryBtnText}>{passedThisRound ? "Speak it again" : "Try again"}</Text>
+              <Text style={styles.retryBtnText}>Try again</Text>
             </Pressable>
             {passedThisRound ? (
               <Pressable
                 style={({ pressed }) => [styles.primaryBtn, { backgroundColor: colors.primary, transform: [{ scale: pressed ? 0.96 : 1 }] }]}
                 onPress={handleNext}
               >
-                <Text style={styles.primaryBtnText}>{isIntro ? "Continue to home" : "Next verse"}</Text>
+                <Text style={styles.primaryBtnText}>
+                  {isIntro || isWelcomeDemo ? "Continue to home" : "Next verse"}
+                </Text>
               </Pressable>
             ) : null}
             <Pressable
               style={({ pressed }) => [styles.quitBtn, { opacity: pressed ? 0.7 : 1 }]}
-              onPress={() => (isIntro ? leaveIntroToHome() : router.back())}
+              onPress={() => exitPractice()}
               accessibilityRole="button"
               accessibilityLabel="Done"
             >
@@ -614,10 +925,32 @@ export default function PracticeGameScreen() {
             : undefined
         }
       >
-        {speechWrapper.available ? (
-          <ReciteComposerWithSpeech key={verse.id} verse={verse} onResult={handleSpeechResult} colors={colors} />
+        {reciteUseType || !speechWrapper.available ? (
+          <ReciteComposerTypeOnly
+            key={`${verse.id}-${reciteSession}-type`}
+            verse={verse}
+            onResult={handleSpeechResult}
+            colors={colors}
+            onSwitchToSpeech={
+              speechWrapper.available && !isWelcomeDemo ? switchReciteToSpeech : undefined
+            }
+          />
         ) : (
-          <ReciteComposerTypeOnly key={verse.id} verse={verse} onResult={handleSpeechResult} colors={colors} />
+          <ReciteComposerWithSpeech
+            key={`${verse.id}-${reciteSession}-speech`}
+            verse={verse}
+            onResult={handleSpeechResult}
+            onExit={exitPractice}
+            colors={colors}
+            autoStart={
+              !isWelcomeDemo && voicePrefs.autoSubmitOnSilence && reciteListeningReady
+            }
+            smartMic={isWelcomeDemo ? false : voicePrefs.autoSubmitOnSilence}
+            minimalUI={handsFree && !isWelcomeDemo}
+            silenceTimeoutMs={voicePrefs.silenceTimeoutMs}
+            maxListenMs={voicePrefs.maxListenMs}
+            onSwitchToType={switchReciteToType}
+          />
         )}
       </View>
     )}
@@ -657,6 +990,10 @@ export default function PracticeGameScreen() {
         </View>
       </View>
     </Modal>
+    <CommandMicListener
+      active={handsFree && commandListen && !speechActive}
+      onTranscript={(t) => void handleVoiceCommand(t)}
+    />
     </View>
     </KeyboardAvoidingView>
   );
@@ -666,10 +1003,12 @@ function ReciteComposerTypeOnly({
   verse,
   onResult,
   colors,
+  onSwitchToSpeech,
 }: {
   verse: GameVerse;
   onResult: (score: AccuracyResult, transcript: string, inputMode: "speech" | "type") => void;
   colors: ThemeColors;
+  onSwitchToSpeech?: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -690,6 +1029,17 @@ function ReciteComposerTypeOnly({
         },
       ]}
     >
+      {onSwitchToSpeech ? (
+        <Pressable
+          onPress={onSwitchToSpeech}
+          style={({ pressed }) => [styles.composerModeSwitch, { opacity: pressed ? 0.7 : 1 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Use voice instead"
+        >
+          <Ionicons name="mic-outline" size={16} color={colors.primary} />
+          <Text style={[styles.composerModeSwitchText, { color: colors.primary }]}>Use voice</Text>
+        </Pressable>
+      ) : null}
       <View style={styles.composerRow}>
         <TextInput
           style={[
@@ -731,11 +1081,25 @@ function ReciteComposerTypeOnly({
 function ReciteComposerWithSpeech({
   verse,
   onResult,
+  onExit,
   colors,
+  autoStart = false,
+  smartMic = false,
+  minimalUI = false,
+  silenceTimeoutMs = DEFAULT_RECITE_LISTENING_CONFIG.silenceTimeoutMs,
+  maxListenMs = DEFAULT_RECITE_LISTENING_CONFIG.maxListenMs,
+  onSwitchToType,
 }: {
   verse: GameVerse;
   onResult: (score: AccuracyResult, transcript: string, inputMode: "speech" | "type") => void;
+  onExit?: () => void;
   colors: ThemeColors;
+  autoStart?: boolean;
+  smartMic?: boolean;
+  minimalUI?: boolean;
+  silenceTimeoutMs?: number;
+  maxListenMs?: number;
+  onSwitchToType?: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -748,11 +1112,23 @@ function ReciteComposerWithSpeech({
   const transcriptRef = useRef("");
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const pulseActive = useRef(false);
+  const listenStartedAt = useRef(0);
+  const lastFinalAt = useRef(0);
+  const hasFinalChunk = useRef(false);
+  const submittedRef = useRef(false);
+  const autoStarted = useRef(false);
+  const listenRetryRef = useRef(0);
 
   const speech = speechWrapper.module!;
   const { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } = speech;
 
+  const contextualStrings = useMemo(
+    () => buildVerseContextualStrings(verse.text),
+    [verse.text]
+  );
+
   useSpeechRecognitionEvent("start", () => {
+    listenRetryRef.current = 0;
     transcriptRef.current = "";
     setReviewMode(false);
     setListening(true);
@@ -769,11 +1145,48 @@ function ReciteComposerWithSpeech({
     pulse();
   });
 
+  const bailOutIfExitPhrase = useCallback(
+    (spoken: string) => {
+      if (!onExit || !isPracticeExitPhrase(spoken)) return false;
+      submittedRef.current = true;
+      try {
+        ExpoSpeechRecognitionModule.stop();
+      } catch {
+        // ignore
+      }
+      setListening(false);
+      onExit();
+      return true;
+    },
+    [onExit, ExpoSpeechRecognitionModule]
+  );
+
+  const submitTranscript = useCallback(() => {
+    if (submittedRef.current) return;
+    const text = transcriptRef.current.trim();
+    if (bailOutIfExitPhrase(text)) return;
+    if (text.length < 2) return;
+    submittedRef.current = true;
+    try {
+      ExpoSpeechRecognitionModule.stop();
+    } catch {
+      // ignore
+    }
+    setListening(false);
+    setStatus("Checking…");
+    const result = computeAccuracy(verse.text, text);
+    onResult(result, text, "speech");
+  }, [verse.text, onResult, bailOutIfExitPhrase, ExpoSpeechRecognitionModule]);
+
   useSpeechRecognitionEvent("end", () => {
     pulseActive.current = false;
     pulseAnim.stopAnimation();
     pulseAnim.setValue(1);
     setListening(false);
+    if (smartMic) {
+      submitTranscript();
+      return;
+    }
     setStatus("Stopped");
     const spoken = transcriptRef.current.trim();
     setEditableTranscript(spoken);
@@ -781,26 +1194,61 @@ function ReciteComposerWithSpeech({
   });
 
   useSpeechRecognitionEvent("result", (event: { results: { transcript: string }[]; isFinal?: boolean }) => {
-    const last = event.results[event.results.length - 1];
-    const text = last?.transcript?.trim() ?? "";
+    const results = event.results ?? [];
+    if (results.length === 0) return;
+
+    let text = results[results.length - 1]?.transcript?.trim() ?? "";
+    if (event.isFinal && results.length > 1) {
+      let bestPercent = -1;
+      for (const r of results) {
+        const candidate = r.transcript?.trim() ?? "";
+        if (!candidate) continue;
+        const { percent } = computeAccuracy(verse.text, candidate);
+        if (percent > bestPercent || (percent === bestPercent && candidate.length > text.length)) {
+          bestPercent = percent;
+          text = candidate;
+        }
+      }
+    }
     if (!text) return;
+
     const current = transcriptRef.current.trim();
     if (event.isFinal) {
+      hasFinalChunk.current = true;
+      lastFinalAt.current = Date.now();
       if (current.length === 0 || text.toLowerCase().startsWith(current.toLowerCase())) {
         transcriptRef.current = text;
       } else {
         transcriptRef.current = (current + " " + text).trim();
       }
       setTranscript(transcriptRef.current);
+      if (bailOutIfExitPhrase(transcriptRef.current.trim())) return;
     } else {
       setTranscript(current ? current + " " + text : text);
     }
   });
 
   useSpeechRecognitionEvent("error", (event: { error: string; message?: string }) => {
+    pulseActive.current = false;
+    pulseAnim.stopAnimation();
+    pulseAnim.setValue(1);
     setListening(false);
-    setStatus("Error");
-    if (event.error !== "aborted" && event.error !== "no-speech") {
+    if (event.error === "aborted" || event.error === "no-speech") {
+      setStatus("Ready");
+      return;
+    }
+    const recoverable =
+      smartMic && !submittedRef.current && listenRetryRef.current < 3;
+    if (recoverable) {
+      listenRetryRef.current += 1;
+      setStatus(isSpeaking() ? "Waiting…" : "Reconnecting…");
+      setTimeout(() => {
+        if (!submittedRef.current) void handleStart();
+      }, isSpeaking() ? 500 : 650);
+      return;
+    }
+    setStatus("Tap mic to try again");
+    if (event.error !== "aborted") {
       Alert.alert("Speech error", event.message ?? event.error);
     }
   });
@@ -816,19 +1264,74 @@ function ReciteComposerWithSpeech({
 
   const handleStart = useCallback(async () => {
     if (permissionGranted === false) return;
+    if (isSpeaking()) {
+      setStatus("Waiting…");
+      setTimeout(() => {
+        if (!submittedRef.current) void handleStart();
+      }, 400);
+      return;
+    }
     if (permissionGranted !== true && !(await requestPermissions())) return;
+    submittedRef.current = false;
+    hasFinalChunk.current = false;
+    listenStartedAt.current = Date.now();
+    lastFinalAt.current = Date.now();
     setReviewMode(false);
     setEditableTranscript("");
     setTranscript("");
     transcriptRef.current = "";
     setStatus("Starting...");
     try {
-      ExpoSpeechRecognitionModule.start({ lang: "en-US", interimResults: true, continuous: true });
+      await ensureVoiceAudioMode();
+      ExpoSpeechRecognitionModule.start({
+        lang: "en-US",
+        interimResults: true,
+        continuous: true,
+        maxAlternatives: 5,
+        contextualStrings,
+      });
     } catch (e) {
-      setStatus("Error");
+      setListening(false);
+      setStatus("Tap mic to try again");
       Alert.alert("Error", String(e));
     }
-  }, [permissionGranted, requestPermissions]);
+  }, [permissionGranted, requestPermissions, ExpoSpeechRecognitionModule, contextualStrings]);
+
+  useEffect(() => {
+    return () => {
+      pulseActive.current = false;
+      try {
+        ExpoSpeechRecognitionModule.stop();
+      } catch {
+        // ignore
+      }
+    };
+  }, [ExpoSpeechRecognitionModule]);
+
+  useEffect(() => {
+    if (!autoStart || autoStarted.current) return;
+    autoStarted.current = true;
+    void handleStart();
+  }, [autoStart, handleStart]);
+
+  useEffect(() => {
+    if (!smartMic || !isListening) return;
+    const tick = setInterval(() => {
+      const now = Date.now();
+      const msSinceFinal = now - lastFinalAt.current;
+      const msListening = now - listenStartedAt.current;
+      if (
+        shouldAutoSubmit(transcriptRef.current, hasFinalChunk.current, msSinceFinal, msListening, {
+          silenceTimeoutMs,
+          maxListenMs,
+          minTranscriptLength: 2,
+        })
+      ) {
+        submitTranscript();
+      }
+    }, 400);
+    return () => clearInterval(tick);
+  }, [smartMic, isListening, silenceTimeoutMs, maxListenMs, submitTranscript]);
 
   const handleStop = useCallback(() => {
     try {
@@ -841,9 +1344,10 @@ function ReciteComposerWithSpeech({
 
   const handleSubmit = useCallback(() => {
     const text = (reviewMode ? editableTranscript : transcript).trim();
+    if (bailOutIfExitPhrase(text)) return;
     const result = computeAccuracy(verse.text, text);
     onResult(result, text, "speech");
-  }, [verse, reviewMode, editableTranscript, transcript, onResult]);
+  }, [verse, reviewMode, editableTranscript, transcript, onResult, bailOutIfExitPhrase]);
 
   const displayText = reviewMode ? editableTranscript : transcript;
   const onChangeComposerText = (t: string) => {
@@ -852,17 +1356,66 @@ function ReciteComposerWithSpeech({
   };
 
   const onMicPress = useCallback(() => {
+    if (smartMic) {
+      if (isListening) submitTranscript();
+      return;
+    }
     if (isListening) handleStop();
     else void handleStart();
-  }, [isListening, handleStop, handleStart]);
+  }, [smartMic, isListening, handleStop, handleStart, submitTranscript]);
 
   const canCheckSpeech =
-    !isListening && (reviewMode ? editableTranscript : transcript).trim().length > 0;
+    !smartMic && !isListening && (reviewMode ? editableTranscript : transcript).trim().length > 0;
   const placeholder = isListening
     ? "Listening — speak the Word"
     : reviewMode
       ? "Edit if needed…"
-      : "Tap the mic to speak, or type here";
+      : "Speak the Word…";
+
+  if (minimalUI) {
+    return (
+      <View
+        style={[
+          styles.composerBar,
+          {
+            backgroundColor: colors.surface,
+            borderTopColor: colors.border,
+            paddingBottom: Math.max(insets.bottom, 10),
+          },
+        ]}
+        accessibilityLiveRegion="polite"
+      >
+        <Text style={[styles.composerStatus, { color: colors.textMuted, fontSize: 16 }]}>
+          {isListening ? "Listening…" : status}
+        </Text>
+        {!isListening && transcriptRef.current.length > 0 ? (
+          <Pressable onPress={submitTranscript} style={{ marginTop: 8 }}>
+            <Text style={{ color: colors.primary, fontWeight: "600" }}>Done speaking</Text>
+          </Pressable>
+        ) : null}
+        {onSwitchToType ? (
+          <Pressable
+            onPress={() => {
+              try {
+                ExpoSpeechRecognitionModule.stop();
+              } catch {
+                // ignore
+              }
+              pulseActive.current = false;
+              setListening(false);
+              onSwitchToType();
+            }}
+            style={({ pressed }) => [styles.composerModeSwitch, { opacity: pressed ? 0.7 : 1, marginTop: 10 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Type instead"
+          >
+            <Ionicons name="create-outline" size={16} color={colors.primary} />
+            <Text style={[styles.composerModeSwitchText, { color: colors.primary }]}>Type instead</Text>
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  }
 
   return (
     <View
@@ -878,56 +1431,103 @@ function ReciteComposerWithSpeech({
       {status !== "Ready" && status !== "Stopped" ? (
         <Text style={[styles.composerStatus, { color: colors.textMuted }]}>{status}</Text>
       ) : null}
-      <View style={styles.composerRow}>
-        <TextInput
-          style={[
-            styles.composerInput,
-            {
-              backgroundColor: colors.inputBg,
-              borderColor: colors.inputBorder,
-              color: colors.text,
-            },
-          ]}
-          placeholder={placeholder}
-          placeholderTextColor={colors.textMuted}
-          value={displayText}
-          onChangeText={onChangeComposerText}
-          multiline
-          editable={!isListening}
-          spellCheck={false}
-          autoCorrect={false}
-        />
+      {onSwitchToType ? (
         <Pressable
-          onPress={handleSubmit}
-          disabled={!canCheckSpeech}
-          style={({ pressed }) => [
-            styles.composerIconBtn,
-            {
-              backgroundColor: colors.primary,
-              opacity: !canCheckSpeech ? colors.disabledOpacity : pressed ? 0.9 : 1,
-            },
-          ]}
+          onPress={() => {
+            if (isListening) {
+              try {
+                ExpoSpeechRecognitionModule.stop();
+              } catch {
+                // ignore
+              }
+            }
+            pulseActive.current = false;
+            setListening(false);
+            onSwitchToType();
+          }}
+          style={({ pressed }) => [styles.composerModeSwitch, { opacity: pressed ? 0.7 : 1 }]}
           accessibilityRole="button"
-          accessibilityLabel="Check"
+          accessibilityLabel="Type instead"
         >
-          <Ionicons name="checkmark" size={24} color={colors.primaryText} />
+          <Ionicons name="create-outline" size={16} color={colors.primary} />
+          <Text style={[styles.composerModeSwitchText, { color: colors.primary }]}>Type instead</Text>
         </Pressable>
-        <Animated.View style={isListening ? { transform: [{ scale: pulseAnim }] } : undefined}>
+      ) : null}
+      <View style={styles.composerRow}>
+        {!smartMic ? (
+          <TextInput
+            style={[
+              styles.composerInput,
+              {
+                backgroundColor: colors.inputBg,
+                borderColor: colors.inputBorder,
+                color: colors.text,
+              },
+            ]}
+            placeholder={placeholder}
+            placeholderTextColor={colors.textMuted}
+            value={displayText}
+            onChangeText={onChangeComposerText}
+            multiline
+            editable={!isListening}
+            spellCheck={false}
+            autoCorrect={false}
+          />
+        ) : (
+          <View style={[styles.composerInput, { justifyContent: "center", borderWidth: 0 }]}>
+            <Text style={{ color: colors.textMuted }}>{isListening ? "Listening…" : "Speak the verse"}</Text>
+          </View>
+        )}
+        {!smartMic ? (
+          <Pressable
+            onPress={handleSubmit}
+            disabled={!canCheckSpeech}
+            style={({ pressed }) => [
+              styles.composerIconBtn,
+              {
+                backgroundColor: colors.primary,
+                opacity: !canCheckSpeech ? colors.disabledOpacity : pressed ? 0.9 : 1,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Check"
+          >
+            <Ionicons name="checkmark" size={24} color={colors.primaryText} />
+          </Pressable>
+        ) : (
           <Pressable
             onPress={onMicPress}
             style={({ pressed }) => [
-              styles.composerMicBtn,
+              styles.composerIconBtn,
               {
-                backgroundColor: isListening ? colors.error : colors.primary,
+                backgroundColor: colors.primary,
                 opacity: pressed ? 0.9 : 1,
               },
             ]}
             accessibilityRole="button"
-            accessibilityLabel={reviewMode ? "Record again" : isListening ? "Stop recording" : "Start recording"}
+            accessibilityLabel="Done speaking"
           >
-            <Ionicons name={isListening ? "stop" : "mic"} size={22} color={colors.primaryText} />
+            <Text style={{ color: colors.primaryText, fontWeight: "600", fontSize: 12 }}>Done</Text>
           </Pressable>
-        </Animated.View>
+        )}
+        {!smartMic ? (
+          <Animated.View style={isListening ? { transform: [{ scale: pulseAnim }] } : undefined}>
+            <Pressable
+              onPress={onMicPress}
+              style={({ pressed }) => [
+                styles.composerMicBtn,
+                {
+                  backgroundColor: isListening ? colors.error : colors.primary,
+                  opacity: pressed ? 0.9 : 1,
+                },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={isListening ? "Stop recording" : "Start recording"}
+            >
+              <Ionicons name={isListening ? "stop" : "mic"} size={22} color={colors.primaryText} />
+            </Pressable>
+          </Animated.View>
+        ) : null}
       </View>
     </View>
   );
@@ -946,6 +1546,15 @@ function createStyles(colors: ThemeColors) {
       paddingHorizontal: 16,
     },
     composerStatus: { fontSize: 12, marginBottom: 6 },
+    composerModeSwitch: {
+      flexDirection: "row",
+      alignItems: "center",
+      alignSelf: "flex-start",
+      gap: 6,
+      marginBottom: 8,
+      paddingVertical: 4,
+    },
+    composerModeSwitchText: { fontSize: 14, fontWeight: "600" },
     composerRow: { flexDirection: "row", alignItems: "flex-end", gap: 10 },
     composerInput: {
       flex: 1,

@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import initSqlJs from "sql.js";
 import { isDefaultFavorite } from "../database/defaultFavorites";
+import { isPracticeEligible } from "../database/verseEligibility";
 
 type BibleVerse = {
   book_name: string;
@@ -37,7 +38,8 @@ async function main(): Promise<void> {
       completion_time INTEGER DEFAULT NULL,
       completed_at INTEGER DEFAULT NULL,
       completion_duration_seconds INTEGER DEFAULT NULL,
-      completion_score INTEGER DEFAULT NULL
+      completion_score INTEGER DEFAULT NULL,
+      is_practice_eligible INTEGER DEFAULT 1
     );
     CREATE TABLE user_actions (
       id TEXT PRIMARY KEY,
@@ -51,7 +53,7 @@ async function main(): Promise<void> {
 
   db.run("BEGIN");
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO verses (id, book_name, book, chapter, verse, text, is_favorite) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO verses (id, book_name, book, chapter, verse, text, is_favorite, is_practice_eligible) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   );
   let count = 0;
   for (const verse of verses) {
@@ -64,6 +66,7 @@ async function main(): Promise<void> {
       verse.verse,
       verse.text,
       isDefaultFavorite(verse.book_name, verse.chapter, verse.verse) ? 1 : 0,
+      isPracticeEligible(verse) ? 1 : 0,
     ]);
     insert.reset();
     count += 1;
@@ -75,6 +78,7 @@ async function main(): Promise<void> {
     CREATE INDEX idx_book_chapter_verse ON verses(book, chapter, verse);
     CREATE INDEX idx_favorites ON verses(is_favorite);
     CREATE INDEX idx_completed_at ON verses(completed_at);
+    CREATE INDEX idx_practice_eligible ON verses(is_practice_eligible);
     CREATE INDEX idx_user_actions_type_created ON user_actions(action_type, created_at);
     CREATE INDEX idx_user_actions_verse ON user_actions(verse_id);
     VACUUM;

@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -12,7 +12,21 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColors, type ThemeColors } from "../../constants/theme";
-import { getVerseById, getNextUncompletedVerse, getLearningStats, getStreakStats } from "../../database/queries";
+import { CommandMicListener } from "../../components/CommandMicListener";
+import { HubPendingVerseBanner } from "../../components/HubPendingVerseBanner";
+import { useAppVoice } from "../../context/AppVoiceProvider";
+import {
+  getVerseById,
+  getNextUncompletedVerse,
+  getLearningStats,
+  getStreakStats,
+  getBooks,
+  setFavorite,
+  type BibleBook,
+} from "../../database/queries";
+import speechWrapper from "../../lib/speechRecognitionWrapper";
+import { processHubVerseVoice } from "../../lib/hubVerseVoice";
+import { parseGlobalCommand } from "../../lib/voiceCommands";
 import { getTodayDate, getStoredVerseOfTheDay, setVerseOfTheDay } from "../../utils/verseOfTheDay";
 import type { GameVerse } from "../../types/verse";
 
@@ -25,6 +39,25 @@ export default function HomeScreen() {
   const [stats, setStats] = useState<{ totalVerses: number; completed: number; percent: number; mostLearnedBook: string | null; perfectCount: number }>({ totalVerses: 0, completed: 0, percent: 0, mostLearnedBook: null, perfectCount: 0 });
   const [streaks, setStreaks] = useState<{ currentStreak: number; longestStreak: number }>({ currentStreak: 0, longestStreak: 0 });
   const [loading, setLoading] = useState(true);
+  const [homeVoiceListen, setHomeVoiceListen] = useState(false);
+  const [pendingVerse, setPendingVerse] = useState<GameVerse | null>(null);
+  const [pendingPracticeVerseIds, setPendingPracticeVerseIds] = useState<string[] | null>(null);
+  const [bibleBooks, setBibleBooks] = useState<BibleBook[]>([]);
+  const { prefs, setEnabled, speak, stopSpeak, speechActive } = useAppVoice();
+  const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
+
+  const announceHome = useCallback(
+    async (v: GameVerse) => {
+      if (!handsFree) return;
+      if (prefs.speakScreenContext) {
+        await speak(
+          `Home. Today's verse is ${v.reference}. Say a reference like Matthew 6 33, today's verse, levels, or settings.`
+        );
+      }
+      setHomeVoiceListen(true);
+    },
+    [handsFree, prefs.speakScreenContext, speak]
+  );
 
   const load = useCallback(async () => {
     const today = getTodayDate();
@@ -42,6 +75,7 @@ export default function HomeScreen() {
         setStreaks(streakData);
         setNextVerse(next && next.id !== v.id ? next : null);
         setLoading(false);
+        void announceHome(v);
         return;
       }
     }
@@ -57,12 +91,58 @@ export default function HomeScreen() {
     setStreaks(streakData);
     setNextVerse(null);
     setLoading(false);
+    if (nextUncompleted) void announceHome(nextUncompleted);
+  }, [announceHome]);
+
+  useEffect(() => {
+    void getBooks().then(setBibleBooks);
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       load();
-    }, [load])
+      return () => {
+        stopSpeak();
+        setHomeVoiceListen(false);
+        setPendingVerse(null);
+        setPendingPracticeVerseIds(null);
+      };
+    }, [load, stopSpeak])
+  );
+
+  const handleHomeVoice = useCallback(
+    async (text: string) => {
+      await processHubVerseVoice(text, {
+        bibleBooks,
+        pendingVerse,
+        setPendingVerse,
+        pendingPracticeVerseIds,
+        setPendingPracticeVerseIds,
+        router,
+        speak,
+        stopSpeak,
+        setListening: setHomeVoiceListen,
+        practiceSource: "home",
+        onAddToChallenges: async (v, verseIds) => {
+          const ids = verseIds?.length ? verseIds : [v.id];
+          await Promise.all(ids.map((id) => setFavorite(id, true)));
+        },
+        onHandsFreeOff: async () => {
+          await setEnabled(false);
+        },
+        handleBeforeFallback: async (spoken) => {
+          if (parseGlobalCommand(spoken) === "today" && verse) {
+            router.push({
+              pathname: "/practice-game",
+              params: { verseId: verse.id, mode: "speech", source: "votd" },
+            });
+            return true;
+          }
+          return false;
+        },
+      });
+    },
+    [bibleBooks, pendingVerse, pendingPracticeVerseIds, router, verse, speak, stopSpeak, setEnabled]
   );
 
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -96,21 +176,19 @@ export default function HomeScreen() {
 
   const votdCompleted = verse?.isCompleted ?? false;
   const progressWidth = Math.min(100, Math.max(0, stats.percent));
-  const streakTitle =
-    streaks.currentStreak === 0
-      ? "Start a streak today"
-      : streaks.currentStreak === 1
-        ? "1 day streak"
-        : `${streaks.currentStreak} day streak`;
+  const streakTitle = "Streak";
   const streakHint =
     streaks.currentStreak === 0
-      ? "Speak today's verse to begin."
-      : "Come back tomorrow to keep it going.";
+      ? "Speak today's verse to start."
+      : streaks.currentStreak === 1
+        ? "1 day — back tomorrow."
+        : `${streaks.currentStreak} days — back tomorrow.`;
 
   return (
     <ScrollView
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: Math.max(insets.top, 16) }]}
+      accessibilityLiveRegion="polite"
     >
       <View style={styles.header}>
         <View style={styles.headerText}>
@@ -119,17 +197,30 @@ export default function HomeScreen() {
             {votdCompleted ? "Nice work today." : "Your verse for today."}
           </Text>
         </View>
-        <TouchableOpacity
-          style={styles.aboutBtn}
-          onPress={() => router.push("/contact")}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          accessibilityRole="button"
-          accessibilityLabel="About Jesus"
-        >
-          <Ionicons name="heart" size={18} color={colors.primary} />
-          <Text style={styles.aboutBtnText}>About</Text>
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={styles.headerIconBtn}
+            onPress={() => router.push("/settings")}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel="Settings"
+          >
+            <Ionicons name="settings-outline" size={22} color={colors.primary} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.aboutBtn}
+            onPress={() => router.push("/contact")}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityRole="button"
+            accessibilityLabel="About Jesus"
+          >
+            <Ionicons name="heart" size={18} color={colors.primary} />
+            <Text style={styles.aboutBtnText}>About</Text>
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {pendingVerse ? <HubPendingVerseBanner reference={pendingVerse.reference} /> : null}
 
       {verse ? (
         <View style={[styles.votdCard, votdCompleted && styles.votdCardDone]}>
@@ -206,15 +297,15 @@ export default function HomeScreen() {
         <View style={styles.statGrid}>
           <View style={[styles.statCell, styles.statCellBorderRight, styles.statCellBorderBottom]}>
             <Text style={styles.statPillValue}>{stats.completed}</Text>
-            <Text style={styles.statPillLabel}>Verses completed</Text>
+            <Text style={styles.statPillLabel}>Completed</Text>
           </View>
           <View style={[styles.statCell, styles.statCellBorderBottom]}>
             <Text style={styles.statPillValue}>{stats.perfectCount}</Text>
-            <Text style={styles.statPillLabel}>Perfect recitations</Text>
+            <Text style={styles.statPillLabel}>Perfect</Text>
           </View>
           <View style={[styles.statCell, styles.statCellBorderRight]}>
             <Text style={styles.statPillValue}>{streaks.longestStreak}</Text>
-            <Text style={styles.statPillLabel}>Longest stretch</Text>
+            <Text style={styles.statPillLabel}>Longest streak</Text>
           </View>
           <View style={styles.statCell}>
             <Text style={styles.statPillValue}>{stats.percent}%</Text>
@@ -228,6 +319,11 @@ export default function HomeScreen() {
           <Text style={styles.bookHint}>Most practiced: {stats.mostLearnedBook}</Text>
         ) : null}
       </View>
+      <CommandMicListener
+        active={handsFree && homeVoiceListen && !speechActive}
+        verseMenuPending={pendingVerse != null}
+        onTranscript={(t) => void handleHomeVoice(t)}
+      />
     </ScrollView>
   );
 }
@@ -246,6 +342,14 @@ function createStyles(colors: ThemeColors) {
     headerText: { flex: 1, marginRight: 12 },
     title: { fontSize: 26, fontWeight: "700", color: colors.text },
     welcome: { fontSize: 15, color: colors.textMuted, marginTop: 6, lineHeight: 22 },
+    headerActions: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
+    headerIconBtn: {
+      padding: 8,
+      borderRadius: 20,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
     aboutBtn: {
       flexDirection: "row",
       alignItems: "center",
@@ -256,7 +360,6 @@ function createStyles(colors: ThemeColors) {
       backgroundColor: colors.surface,
       borderWidth: 1,
       borderColor: colors.surfaceBorder,
-      marginTop: 4,
     },
     aboutBtnText: { fontSize: 14, fontWeight: "600", color: colors.primary },
     sectionLabel: {

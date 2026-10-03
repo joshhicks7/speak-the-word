@@ -3,6 +3,7 @@ import React, { useEffect, useState } from "react";
 import { View, Text, ActivityIndicator, StyleSheet, useColorScheme, StatusBar } from "react-native";
 import { enableScreens } from "react-native-screens";
 import { getTheme } from "../constants/theme";
+import { AppVoiceProvider } from "../context/AppVoiceProvider";
 import { setupDatabase } from "../database/setup";
 
 // Avoid "Cannot read property 'default' of undefined" in react-native-screens Animated ref (Fabric/React 19)
@@ -42,7 +43,7 @@ export default function RootLayout() {
   }
 
   return (
-    <>
+    <AppVoiceProvider>
       <StatusBar barStyle={colorScheme === "dark" ? "light-content" : "dark-content"} />
       <Stack
         screenOptions={{
@@ -53,6 +54,7 @@ export default function RootLayout() {
         }}
       >
         <Stack.Screen name="index" />
+        <Stack.Screen name="welcome" />
         <Stack.Screen name="intro" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen
@@ -64,6 +66,16 @@ export default function RootLayout() {
             headerTintColor: colors.text,
           }}
         />
+        <Stack.Screen
+          name="settings"
+          options={{
+            headerShown: true,
+            title: "Settings",
+            headerStyle: { backgroundColor: colors.surface },
+            headerTintColor: colors.text,
+          }}
+        />
+        <Stack.Screen name="open" options={{ headerShown: false }} />
         <Stack.Screen
           name="practice-game"
           options={{
@@ -92,7 +104,7 @@ export default function RootLayout() {
           }}
         />
       </Stack>
-    </>
+    </AppVoiceProvider>
   );
 }
 

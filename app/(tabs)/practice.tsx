@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, useFocusEffect } from "expo-router";
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -15,17 +15,32 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColors, type ThemeColors } from "../../constants/theme";
-import { getFavoriteVerses, getVerseByBookChapterVerse, setFavorite } from "../../database/queries";
+import {
+  getFavoriteVerses,
+  getVerseByBookChapterVerse,
+  setFavorite,
+  getBooks,
+  type BibleBook,
+} from "../../database/queries";
+import { processHubVerseVoice } from "../../lib/hubVerseVoice";
+import { CommandMicListener } from "../../components/CommandMicListener";
+import { HubPendingVerseBanner } from "../../components/HubPendingVerseBanner";
+import { useAppVoice } from "../../context/AppVoiceProvider";
+import speechWrapper from "../../lib/speechRecognitionWrapper";
+import type { GameVerse } from "../../types/verse";
 import {
   groupFavoriteVersesIntoChallenges,
   getChallengeReference,
   getChallengePreview,
   getChallengeScore,
   isChallengeCompleted,
+  isChallengeUserAddedOrNonDefault,
   getChallengeVerseIds,
   getChallengeFirstVerse,
   type ChallengeItem,
 } from "../../utils/challengeRanges";
+import { getUserFavoriteIds, migrateLegacyUserFavorites } from "../../utils/userFavorites";
+import { isDefaultFavorite } from "../../database/defaultFavorites";
 
 type CompletionFilter = "all" | "completed" | "not_completed";
 
@@ -44,21 +59,86 @@ export default function PracticeScreen() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [completionFilter, setCompletionFilter] = useState<CompletionFilter>("all");
+  const [hideStarterDefaults, setHideStarterDefaults] = useState(false);
+  const [userFavoriteIds, setUserFavoriteIds] = useState<Set<string>>(() => new Set());
   const [filterSheetVisible, setFilterSheetVisible] = useState(false);
   const [openingStarter, setOpeningStarter] = useState(false);
+  const [practiceVoiceListen, setPracticeVoiceListen] = useState(false);
+  const [pendingVerse, setPendingVerse] = useState<GameVerse | null>(null);
+  const [pendingPracticeVerseIds, setPendingPracticeVerseIds] = useState<string[] | null>(null);
+  const [bibleBooks, setBibleBooks] = useState<BibleBook[]>([]);
+  const hubIntroPending = useRef(true);
+  const { prefs, speak, stopSpeak, speechActive } = useAppVoice();
+  const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const list = await getFavoriteVerses();
-    setChallenges(groupFavoriteVersesIntoChallenges(list));
-    setLoading(false);
+  useEffect(() => {
+    void getBooks().then(setBibleBooks);
   }, []);
+
+  const openChallenge = useCallback(
+    (item: ChallengeItem) => {
+      const verseIds = getChallengeVerseIds(item);
+      const firstVerse = getChallengeFirstVerse(item);
+      router.push({
+        pathname: "/practice-game",
+        params: {
+          verseId: firstVerse.id,
+          mode: "speech",
+          verseIds: verseIds.join(","),
+          currentIndex: "0",
+        },
+      });
+    },
+    [router]
+  );
+
+  const load = useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setLoading(true);
+    const list = await getFavoriteVerses();
+    const legacyUserIds = list
+      .filter((v) => {
+        const lastSpace = v.reference.lastIndexOf(" ");
+        const bookName = lastSpace >= 0 ? v.reference.slice(0, lastSpace) : v.reference;
+        return !isDefaultFavorite(bookName, v.chapter, v.verse);
+      })
+      .map((v) => v.id);
+    await migrateLegacyUserFavorites(legacyUserIds);
+    const userIds = await getUserFavoriteIds();
+    setUserFavoriteIds(userIds);
+    setChallenges(groupFavoriteVersesIntoChallenges(list));
+    if (!options?.silent) setLoading(false);
+  }, []);
+
+  const announceHubIntro = useCallback(async () => {
+    if (!handsFree) return;
+    if (prefs.speakScreenContext) {
+      await speak(
+        "My Challenges. Say a verse reference, like Genesis 1 1. Say home, levels, or settings to leave."
+      );
+    }
+    setPracticeVoiceListen(true);
+  }, [handsFree, prefs.speakScreenContext, speak]);
 
   useFocusEffect(
     useCallback(() => {
-      load();
-    }, [load])
+      hubIntroPending.current = true;
+      setPendingVerse(null);
+      setPendingPracticeVerseIds(null);
+      void load();
+      return () => {
+        stopSpeak();
+        setPracticeVoiceListen(false);
+        setPendingVerse(null);
+        setPendingPracticeVerseIds(null);
+      };
+    }, [load, stopSpeak])
   );
+
+  useEffect(() => {
+    if (loading || pendingVerse != null || !hubIntroPending.current) return;
+    hubIntroPending.current = false;
+    void announceHubIntro();
+  }, [loading, pendingVerse, announceHubIntro]);
 
   const handleRemove = useCallback(
     (item: ChallengeItem) => {
@@ -122,8 +202,43 @@ export default function PracticeScreen() {
     } else if (completionFilter === "not_completed") {
       list = list.filter((item) => !isChallengeCompleted(item));
     }
+    if (hideStarterDefaults) {
+      list = list.filter((item) => isChallengeUserAddedOrNonDefault(item, userFavoriteIds));
+    }
     return list;
-  }, [challenges, searchQuery, completionFilter]);
+  }, [challenges, searchQuery, completionFilter, hideStarterDefaults, userFavoriteIds]);
+
+  const handlePracticeVoice = useCallback(
+    async (text: string) => {
+      hubIntroPending.current = false;
+      await processHubVerseVoice(text, {
+        bibleBooks,
+        pendingVerse,
+        setPendingVerse,
+        pendingPracticeVerseIds,
+        setPendingPracticeVerseIds,
+        router,
+        speak,
+        stopSpeak,
+        setListening: setPracticeVoiceListen,
+        practiceSource: "challenge",
+        onAddToChallenges: async (verse, verseIds) => {
+          const ids = verseIds?.length ? verseIds : [verse.id];
+          await Promise.all(ids.map((id) => setFavorite(id, true)));
+          await load({ silent: true });
+        },
+      });
+    },
+    [
+      bibleBooks,
+      pendingVerse,
+      pendingPracticeVerseIds,
+      router,
+      speak,
+      stopSpeak,
+      load,
+    ]
+  );
 
   if (loading) {
     return (
@@ -134,19 +249,26 @@ export default function PracticeScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} accessibilityLiveRegion="polite">
+      <CommandMicListener
+        active={handsFree && practiceVoiceListen && !speechActive}
+        verseMenuPending={pendingVerse != null}
+        onTranscript={(t) => void handlePracticeVoice(t)}
+      />
       <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}>
-        <Text style={styles.title}>My Challenges</Text>
-        <Text style={styles.subtitle}>Your verses. Tap one to speak it.</Text>
-        <TouchableOpacity
-          style={styles.addBtn}
-          onPress={() => router.push("/add-to-challenges")}
-          accessibilityRole="button"
-          accessibilityLabel="Add a verse"
-        >
-          <Ionicons name="add" size={18} color={colors.primary} />
-          <Text style={styles.addBtnText}>Add a verse</Text>
-        </TouchableOpacity>
+        {pendingVerse ? <HubPendingVerseBanner reference={pendingVerse.reference} /> : null}
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>My Challenges</Text>
+          <TouchableOpacity
+            style={styles.addBtn}
+            onPress={() => router.push("/add-to-challenges")}
+            accessibilityRole="button"
+            accessibilityLabel="Add a verse"
+          >
+            <Ionicons name="add" size={18} color={colors.primary} />
+            <Text style={styles.addBtnText}>Add a verse</Text>
+          </TouchableOpacity>
+        </View>
         {challenges.length > 0 && (
           <View style={styles.searchRow}>
             <TextInput
@@ -160,10 +282,21 @@ export default function PracticeScreen() {
               autoCorrect={false}
             />
             <TouchableOpacity
-              style={[styles.filterBtn, { backgroundColor: completionFilter !== "all" ? colors.primary + "20" : colors.surface, borderColor: colors.surfaceBorder }]}
+              style={[
+                styles.filterBtn,
+                {
+                  backgroundColor:
+                    completionFilter !== "all" || hideStarterDefaults ? colors.primary + "20" : colors.surface,
+                  borderColor: colors.surfaceBorder,
+                },
+              ]}
               onPress={() => setFilterSheetVisible(true)}
             >
-              <Ionicons name="filter" size={22} color={completionFilter !== "all" ? colors.primary : colors.textMuted} />
+              <Ionicons
+                name="filter"
+                size={22}
+                color={completionFilter !== "all" || hideStarterDefaults ? colors.primary : colors.textMuted}
+              />
             </TouchableOpacity>
           </View>
         )}
@@ -172,15 +305,13 @@ export default function PracticeScreen() {
         <Pressable style={styles.sheetBackdrop} onPress={() => setFilterSheetVisible(false)}>
           <Pressable style={[styles.sheetContent, { backgroundColor: colors.surface }]} onPress={(e) => e.stopPropagation()}>
             <View style={styles.sheetHandle} />
-            <Text style={[styles.sheetTitle, { color: colors.text }]}>Filter by completion</Text>
+            <Text style={[styles.sheetTitle, { color: colors.text }]}>Filters</Text>
+            <Text style={[styles.sheetSectionLabel, { color: colors.textMuted }]}>Completion</Text>
             {(["all", "completed", "not_completed"] as const).map((opt) => (
               <TouchableOpacity
                 key={opt}
                 style={[styles.sheetOption, completionFilter === opt && { backgroundColor: colors.primary + "18" }]}
-                onPress={() => {
-                  setCompletionFilter(opt);
-                  setFilterSheetVisible(false);
-                }}
+                onPress={() => setCompletionFilter(opt)}
               >
                 <Text style={[styles.sheetOptionText, { color: colors.text }]}>
                   {opt === "all" ? "All" : opt === "completed" ? "Completed" : "Still practicing"}
@@ -188,6 +319,24 @@ export default function PracticeScreen() {
                 {completionFilter === opt && <Ionicons name="checkmark" size={20} color={colors.primary} />}
               </TouchableOpacity>
             ))}
+            <Text style={[styles.sheetSectionLabel, { color: colors.textMuted, marginTop: 12 }]}>
+              Default challenges
+            </Text>
+            <TouchableOpacity
+              style={[styles.sheetOption, hideStarterDefaults && { backgroundColor: colors.primary + "18" }]}
+              onPress={() => setHideStarterDefaults((v) => !v)}
+            >
+              <Text style={[styles.sheetOptionText, { color: colors.text, flex: 1 }]}>
+                Hide default challenges
+              </Text>
+              {hideStarterDefaults ? <Ionicons name="checkmark" size={20} color={colors.primary} /> : null}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.sheetDoneBtn, { backgroundColor: colors.primary }]}
+              onPress={() => setFilterSheetVisible(false)}
+            >
+              <Text style={[styles.sheetDoneBtnText, { color: colors.primaryText }]}>Done</Text>
+            </TouchableOpacity>
           </Pressable>
         </Pressable>
       </Modal>
@@ -235,22 +384,10 @@ export default function PracticeScreen() {
             const ref = getChallengeReference(item);
             const score = getChallengeScore(item);
             const completed = isChallengeCompleted(item);
-            const verseIds = getChallengeVerseIds(item);
-            const firstVerse = getChallengeFirstVerse(item);
             return (
               <TouchableOpacity
                 style={[styles.card, completed && styles.cardDone]}
-                onPress={() =>
-                  router.push({
-                    pathname: "/practice-game",
-                    params: {
-                      verseId: firstVerse.id,
-                      mode: "speech",
-                      verseIds: verseIds.join(","),
-                      currentIndex: "0",
-                    },
-                  })
-                }
+                onPress={() => openChallenge(item)}
                 onLongPress={() => handleRemove(item)}
                 delayLongPress={400}
                 activeOpacity={0.8}
@@ -290,13 +427,18 @@ function createStyles(colors: ThemeColors) {
     container: { flex: 1, backgroundColor: colors.background },
     centered: { flex: 1, justifyContent: "center", alignItems: "center" },
     header: { paddingHorizontal: 20, paddingBottom: 12 },
-    title: { fontSize: 26, fontWeight: "700", color: colors.text },
-    subtitle: { fontSize: 15, color: colors.textMuted, lineHeight: 22, marginTop: 6, marginBottom: 14 },
+    titleRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      marginBottom: 4,
+    },
+    title: { fontSize: 26, fontWeight: "700", color: colors.text, flex: 1 },
     addBtn: {
       flexDirection: "row",
       alignItems: "center",
       gap: 6,
-      alignSelf: "flex-start",
       paddingVertical: 8,
       paddingHorizontal: 12,
       borderRadius: 20,
@@ -343,7 +485,14 @@ function createStyles(colors: ThemeColors) {
       alignSelf: "center",
       marginBottom: 20,
     },
-    sheetTitle: { fontSize: 18, fontWeight: "700", marginBottom: 12 },
+    sheetTitle: { fontSize: 18, fontWeight: "700", marginBottom: 8 },
+    sheetSectionLabel: {
+      fontSize: 12,
+      fontWeight: "600",
+      textTransform: "uppercase",
+      letterSpacing: 0.4,
+      marginBottom: 6,
+    },
     sheetOption: {
       flexDirection: "row",
       alignItems: "center",
@@ -354,6 +503,13 @@ function createStyles(colors: ThemeColors) {
       marginBottom: 8,
     },
     sheetOptionText: { fontSize: 16 },
+    sheetDoneBtn: {
+      marginTop: 16,
+      paddingVertical: 14,
+      borderRadius: 12,
+      alignItems: "center",
+    },
+    sheetDoneBtnText: { fontSize: 16, fontWeight: "600" },
     list: { padding: 20, paddingTop: 8, paddingBottom: 40 },
     card: {
       backgroundColor: colors.surface,

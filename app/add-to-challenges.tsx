@@ -11,6 +11,7 @@ import {
   ScrollView,
   Alert,
   Pressable,
+  TextInput,
 } from "react-native";
 import { useThemeColors, type ThemeColors } from "../constants/theme";
 import {
@@ -20,8 +21,10 @@ import {
   toggleFavorite,
   setChapterFavorites,
   setRangeFavorites,
+  setFavorite,
   type BibleBook,
   type VersePosition,
+  searchVersesByText,
 } from "../database/queries";
 import type { GameVerse } from "../types/verse";
 
@@ -72,6 +75,32 @@ export default function AddToChallengesScreen() {
   const [rangeStart, setRangeStart] = useState<VersePosition | null>(null);
   const [rangeEnd, setRangeEnd] = useState<VersePosition | null>(null);
   const [savingRange, setSavingRange] = useState(false);
+  const [verseSearch, setVerseSearch] = useState("");
+  const [verseSearchResults, setVerseSearchResults] = useState<GameVerse[]>([]);
+  const [verseSearchLoading, setVerseSearchLoading] = useState(false);
+
+  useEffect(() => {
+    const q = verseSearch.trim();
+    if (q.length < 2) {
+      setVerseSearchResults([]);
+      setVerseSearchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setVerseSearchLoading(true);
+    const timer = setTimeout(() => {
+      void searchVersesByText(q, 30).then((rows) => {
+        if (!cancelled) {
+          setVerseSearchResults(rows);
+          setVerseSearchLoading(false);
+        }
+      });
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [verseSearch]);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,6 +210,44 @@ export default function AddToChallengesScreen() {
     onSelectChapter(nextChapter);
   }, [hasNextChapter, selectedBook, chapters, currentChapterIndex, onSelectChapter]);
 
+  const openPractice = useCallback(
+    (id: string) => {
+      router.push({ pathname: "/practice-game", params: { verseId: id, mode: "speech" } });
+    },
+    [router]
+  );
+
+  const addVerseToChallenges = useCallback(async (v: GameVerse) => {
+    await setFavorite(v.id, true);
+    setVerseSearchResults((prev) =>
+      prev.map((row) => (row.id === v.id ? { ...row, isFavorite: true } : row))
+    );
+  }, []);
+
+  const searchActive = selectedBook === null && verseSearch.trim().length >= 2;
+
+  const searchHeader = (
+    <View style={styles.searchBlock}>
+      <TextInput
+        style={[styles.searchInput, { backgroundColor: colors.surface, borderColor: colors.surfaceBorder, color: colors.text }]}
+        placeholder="Search verse text…"
+        placeholderTextColor={colors.textMuted}
+        value={verseSearch}
+        onChangeText={setVerseSearch}
+        autoCorrect={false}
+        spellCheck={false}
+        clearButtonMode="while-editing"
+        accessibilityLabel="Search verse text"
+      />
+      {verseSearchLoading ? (
+        <ActivityIndicator size="small" color={colors.primary} style={styles.searchSpinner} />
+      ) : null}
+      {searchActive && !verseSearchLoading && verseSearchResults.length === 0 ? (
+        <Text style={styles.searchEmpty}>No verses match. Try different words.</Text>
+      ) : null}
+    </View>
+  );
+
   if (loading) {
     return (
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
@@ -205,35 +272,76 @@ export default function AddToChallengesScreen() {
       </View>
 
       {selectedBook === null ? (
-        <FlatList
-          data={books}
-          keyExtractor={(item) => String(item.book)}
-          contentContainerStyle={styles.list}
-          ListHeaderComponent={
-            <View>
-              <Text style={styles.listHint}>Pick a book, or add a longer passage.</Text>
+        searchActive ? (
+          <FlatList
+            data={verseSearchResults}
+            keyExtractor={(item) => item.id}
+            contentContainerStyle={styles.list}
+            ListHeaderComponent={searchHeader}
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item }) => (
+              <View style={styles.searchResultRow}>
+                <View style={styles.verseInfo}>
+                  <Text style={styles.verseRef}>{item.reference}</Text>
+                  <Text style={styles.verseText} numberOfLines={3}>
+                    {item.text}
+                  </Text>
+                </View>
+                <View style={styles.searchActions}>
+                  <TouchableOpacity
+                    style={styles.searchActionBtn}
+                    onPress={() => openPractice(item.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Practice ${item.reference}`}
+                  >
+                    <Text style={styles.searchActionText}>Practice</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.searchActionBtn, item.isFavorite && styles.searchActionBtnDone]}
+                    onPress={() => void addVerseToChallenges(item)}
+                    disabled={item.isFavorite}
+                    accessibilityRole="button"
+                    accessibilityLabel={item.isFavorite ? "Already in challenges" : `Add ${item.reference}`}
+                  >
+                    <Text style={styles.searchActionText}>{item.isFavorite ? "Added" : "Add"}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          />
+        ) : (
+          <FlatList
+            data={books}
+            keyExtractor={(item) => String(item.book)}
+            contentContainerStyle={styles.list}
+            ListHeaderComponent={
+              <View>
+                {searchHeader}
+                <Text style={styles.listHint}>Pick a book, or add a longer passage.</Text>
+                <TouchableOpacity
+                  style={styles.addRangeBtn}
+                  onPress={() => router.push("/add-range")}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add a passage"
+                >
+                  <Ionicons name="book-outline" size={22} color={colors.primary} />
+                  <Text style={styles.addRangeText}>Add a passage</Text>
+                </TouchableOpacity>
+              </View>
+            }
+            keyboardShouldPersistTaps="handled"
+            renderItem={({ item }) => (
               <TouchableOpacity
-                style={styles.addRangeBtn}
-                onPress={() => router.push("/add-range")}
-                accessibilityRole="button"
-                accessibilityLabel="Add a passage"
+                style={styles.row}
+                onPress={() => onSelectBook(item)}
+                activeOpacity={0.7}
               >
-                <Ionicons name="book-outline" size={22} color={colors.primary} />
-                <Text style={styles.addRangeText}>Add a passage</Text>
+                <Text style={styles.rowTitle}>{item.book_name}</Text>
+                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
               </TouchableOpacity>
-            </View>
-          }
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.row}
-              onPress={() => onSelectBook(item)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.rowTitle}>{item.book_name}</Text>
-              <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
-            </TouchableOpacity>
-          )}
-        />
+            )}
+          />
+        )
       ) : selectedChapter === null ? (
         <>
           {loadingChapters ? (
@@ -402,6 +510,36 @@ function createStyles(colors: ThemeColors) {
     breadcrumb: { paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
     breadcrumbBtn: { flexDirection: "row", alignItems: "center", gap: 4 },
     breadcrumbText: { fontSize: 16, color: colors.primary, fontWeight: "500" },
+    searchBlock: { marginBottom: 14 },
+    searchInput: {
+      borderWidth: 1,
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      fontSize: 16,
+    },
+    searchSpinner: { marginTop: 10 },
+    searchEmpty: { marginTop: 10, fontSize: 15, color: colors.textMuted },
+    searchResultRow: {
+      backgroundColor: colors.surface,
+      padding: 14,
+      borderRadius: 12,
+      marginBottom: 10,
+      borderWidth: 1,
+      borderColor: colors.surfaceBorder,
+    },
+    searchActions: { flexDirection: "row", gap: 10, marginTop: 12 },
+    searchActionBtn: {
+      flex: 1,
+      paddingVertical: 10,
+      borderRadius: 10,
+      alignItems: "center",
+      backgroundColor: colors.primary + "18",
+      borderWidth: 1,
+      borderColor: colors.primary + "40",
+    },
+    searchActionBtnDone: { opacity: 0.6 },
+    searchActionText: { fontSize: 14, fontWeight: "600", color: colors.primary },
     listHint: {
       fontSize: 15,
       color: colors.textMuted,

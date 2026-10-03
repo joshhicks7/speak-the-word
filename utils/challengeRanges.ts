@@ -1,3 +1,4 @@
+import { isDefaultFavorite } from "../database/defaultFavorites";
 import type { GameVerse } from "../types/verse";
 
 /** Single verse challenge */
@@ -102,5 +103,23 @@ export function getChallengeScore(item: ChallengeItem): number | null {
 export function isChallengeCompleted(item: ChallengeItem): boolean {
   if (item.type === "single") return item.verse.isCompleted;
   return item.verses.every((v) => v.isCompleted);
+}
+
+function bookNameFromReference(reference: string): string {
+  const lastSpace = reference.lastIndexOf(" ");
+  return lastSpace >= 0 ? reference.slice(0, lastSpace) : reference;
+}
+
+/** Keep challenges the user added, or that include any non–starter-default verse. */
+export function isChallengeUserAddedOrNonDefault(
+  item: ChallengeItem,
+  userFavoriteIds: ReadonlySet<string>
+): boolean {
+  const verses = item.type === "single" ? [item.verse] : item.verses;
+  return verses.some((v) => {
+    if (userFavoriteIds.has(v.id)) return true;
+    const bookName = bookNameFromReference(v.reference);
+    return !isDefaultFavorite(bookName, v.chapter, v.verse);
+  });
 }
 

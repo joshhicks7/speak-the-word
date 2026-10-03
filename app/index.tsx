@@ -1,15 +1,15 @@
 import { Redirect } from "expo-router";
 import React, { useEffect, useState } from "react";
 import { View, ActivityIndicator, StyleSheet } from "react-native";
-import { hasSeenTutorial } from "../utils/onboarding";
+import { hasSeenWelcome } from "../utils/onboarding";
 
 export default function Index() {
   const [checked, setChecked] = useState(false);
-  const [seenTutorial, setSeenTutorial] = useState(true);
+  const [seenWelcome, setSeenWelcome] = useState(true);
 
   useEffect(() => {
-    hasSeenTutorial().then((seen) => {
-      setSeenTutorial(seen);
+    hasSeenWelcome().then((seen) => {
+      setSeenWelcome(seen);
       setChecked(true);
     });
   }, []);
@@ -22,8 +22,8 @@ export default function Index() {
     );
   }
 
-  if (!seenTutorial) {
-    return <Redirect href="/intro" />;
+  if (!seenWelcome) {
+    return <Redirect href="/welcome" />;
   }
 
   return <Redirect href="/(tabs)" />;
