@@ -1,4 +1,3 @@
-import { isDefaultFavorite } from "../database/defaultFavorites";
 import type { GameVerse } from "../types/verse";
 
 /** Single verse challenge */
@@ -59,6 +58,16 @@ export function groupFavoriteVersesIntoChallenges(verses: GameVerse[]): Challeng
   return items;
 }
 
+export function buildChallengeItemFromVerses(verses: GameVerse[]): ChallengeItem | null {
+  if (verses.length === 0) return null;
+  if (verses.length === 1) return { type: "single", verse: verses[0]! };
+  return {
+    type: "range",
+    verses,
+    reference: formatRangeReference(verses),
+  };
+}
+
 function formatRangeReference(verses: GameVerse[]): string {
   const first = verses[0];
   const last = verses[verses.length - 1];
@@ -90,7 +99,7 @@ export function getChallengePreview(item: ChallengeItem): string {
   return `${item.verses.length} verses`;
 }
 
-/** Best completion score in the range, or single verse score. */
+/** @deprecated Use StoredChallenge.bestEver from database/challenges. */
 export function getChallengeScore(item: ChallengeItem): number | null {
   if (item.type === "single") return item.verse.completionScore ?? null;
   const scores = item.verses
@@ -99,27 +108,9 @@ export function getChallengeScore(item: ChallengeItem): number | null {
   return scores.length === 0 ? null : Math.max(...scores);
 }
 
-/** True if every verse in the challenge is completed. */
+/** @deprecated Use StoredChallenge.bestEver === 100 from database/challenges. */
 export function isChallengeCompleted(item: ChallengeItem): boolean {
   if (item.type === "single") return item.verse.isCompleted;
   return item.verses.every((v) => v.isCompleted);
-}
-
-function bookNameFromReference(reference: string): string {
-  const lastSpace = reference.lastIndexOf(" ");
-  return lastSpace >= 0 ? reference.slice(0, lastSpace) : reference;
-}
-
-/** Keep challenges the user added, or that include any non–starter-default verse. */
-export function isChallengeUserAddedOrNonDefault(
-  item: ChallengeItem,
-  userFavoriteIds: ReadonlySet<string>
-): boolean {
-  const verses = item.type === "single" ? [item.verse] : item.verses;
-  return verses.some((v) => {
-    if (userFavoriteIds.has(v.id)) return true;
-    const bookName = bookNameFromReference(v.reference);
-    return !isDefaultFavorite(bookName, v.chapter, v.verse);
-  });
 }
 

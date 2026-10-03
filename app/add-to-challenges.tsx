@@ -18,15 +18,17 @@ import {
   getBooks,
   getChaptersForBook,
   getVersesByChapter,
-  toggleFavorite,
-  setChapterFavorites,
-  setRangeFavorites,
-  setFavorite,
+  getVerseById,
   type BibleBook,
   type VersePosition,
   searchVersesByText,
 } from "../database/queries";
 import type { GameVerse } from "../types/verse";
+import {
+  deleteChallenge,
+  findChallengeByBounds,
+  saveChallengeAsCustom,
+} from "../database/challenges";
 
 function toPos(v: GameVerse): VersePosition {
   return { book: v.book, chapter: v.chapter, verse: v.verse };
@@ -140,7 +142,22 @@ export default function AddToChallengesScreen() {
   }, [selectedBook]);
 
   const onToggleVerse = useCallback(async (id: string) => {
-    await toggleFavorite(id);
+    const v = await getVerseById(id);
+    if (!v) return;
+    const bounds = {
+      startBook: v.book,
+      startChapter: v.chapter,
+      startVerse: v.verse,
+      endBook: v.book,
+      endChapter: v.chapter,
+      endVerse: v.verse,
+    };
+    const existing = await findChallengeByBounds(bounds);
+    if (existing?.kind === "custom") {
+      await deleteChallenge(existing.id);
+    } else {
+      await saveChallengeAsCustom(bounds);
+    }
     if (selectedBook !== null && selectedChapter !== null) {
       const updated = await getVersesByChapter(selectedBook.book, selectedChapter);
       setVerses(updated);
@@ -149,9 +166,19 @@ export default function AddToChallengesScreen() {
 
   const onAddEntireChapter = useCallback(async () => {
     if (selectedBook === null || selectedChapter === null) return;
-    await setChapterFavorites(selectedBook.book, selectedChapter, true);
-    const updated = await getVersesByChapter(selectedBook.book, selectedChapter);
-    setVerses(updated);
+    const chapterVerses = await getVersesByChapter(selectedBook.book, selectedChapter);
+    if (chapterVerses.length === 0) return;
+    const first = chapterVerses[0]!;
+    const last = chapterVerses[chapterVerses.length - 1]!;
+    await saveChallengeAsCustom({
+      startBook: first.book,
+      startChapter: first.chapter,
+      startVerse: first.verse,
+      endBook: last.book,
+      endChapter: last.chapter,
+      endVerse: last.verse,
+    });
+    setVerses(chapterVerses);
   }, [selectedBook, selectedChapter]);
 
   const onAddRange = useCallback(async () => {
@@ -159,7 +186,14 @@ export default function AddToChallengesScreen() {
     const { start, end } = orderedRange(rangeStart, rangeEnd);
     setSavingRange(true);
     try {
-      await setRangeFavorites(start, end, true);
+      await saveChallengeAsCustom({
+        startBook: start.book,
+        startChapter: start.chapter,
+        startVerse: start.verse,
+        endBook: end.book,
+        endChapter: end.chapter,
+        endVerse: end.verse,
+      });
       if (selectedBook !== null && selectedChapter !== null) {
         const updated = await getVersesByChapter(selectedBook.book, selectedChapter);
         setVerses(updated);
@@ -212,13 +246,23 @@ export default function AddToChallengesScreen() {
 
   const openPractice = useCallback(
     (id: string) => {
-      router.push({ pathname: "/practice-game", params: { verseId: id, mode: "speech" } });
+      router.push({
+        pathname: "/practice-game",
+        params: { session: "level", verseId: id, mode: "speech" },
+      });
     },
     [router]
   );
 
   const addVerseToChallenges = useCallback(async (v: GameVerse) => {
-    await setFavorite(v.id, true);
+    await saveChallengeAsCustom({
+      startBook: v.book,
+      startChapter: v.chapter,
+      startVerse: v.verse,
+      endBook: v.book,
+      endChapter: v.chapter,
+      endVerse: v.verse,
+    });
     setVerseSearchResults((prev) =>
       prev.map((row) => (row.id === v.id ? { ...row, isFavorite: true } : row))
     );

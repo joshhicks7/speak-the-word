@@ -16,7 +16,6 @@ import {
   getCompletedVersesOrdered,
   getLearningStats,
   getBooks,
-  setFavorite,
   type BibleBook,
 } from "../../database/queries";
 import type { GameVerse } from "../../types/verse";
@@ -106,7 +105,7 @@ export default function LevelsScreen() {
     (verseId: string) => {
       router.push({
         pathname: "/practice-game",
-        params: { verseId, mode: "speech" },
+        params: { session: "level", verseId, mode: "speech" },
       });
     },
     [router]
@@ -124,10 +123,18 @@ export default function LevelsScreen() {
         speak,
         stopSpeak,
         setListening: setLevelsVoiceListen,
-        practiceSource: "levels",
+        practiceAsChallenge: false,
         onAddToChallenges: async (v, verseIds) => {
+          const { upsertChallengeFromVerses, setChallengeKind } = await import(
+            "../../database/challenges"
+          );
+          const { getVerseById } = await import("../../database/queries");
           const ids = verseIds?.length ? verseIds : [v.id];
-          await Promise.all(ids.map((id) => setFavorite(id, true)));
+          const verses = (await Promise.all(ids.map((id) => getVerseById(id)))).filter(
+            (x): x is NonNullable<typeof x> => x != null
+          );
+          const row = await upsertChallengeFromVerses(verses);
+          if (row) await setChallengeKind(row.id, "custom");
         },
         onHandsFreeOff: async () => {
           await setEnabled(false);

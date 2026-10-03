@@ -14,6 +14,7 @@ import {
   utteranceRequestsDirectPractice,
   utteranceRequestsDirectRead,
 } from "./parseScriptureReference";
+import { upsertChallengeFromVerses } from "../database/challenges";
 import { logVoiceHub } from "./voiceCommandLog";
 import {
   extractFindVerseQuery,
@@ -38,8 +39,8 @@ export type HubVerseVoiceDeps = {
   speak: (text: string) => Promise<void>;
   stopSpeak: () => void;
   setListening: (active: boolean) => void;
-  /** Route param for practice-game `source`. */
-  practiceSource?: string;
+  /** When false, voice practice uses level session (Levels tab). */
+  practiceAsChallenge?: boolean;
   onAddToChallenges?: (verse: GameVerse, verseIds?: string[]) => Promise<void>;
   onHandsFreeOff?: () => Promise<void>;
   /** Screen-specific commands (e.g. today's verse, levels next). Return true if handled. */
@@ -118,22 +119,29 @@ async function resolveSpokenScripture(
   };
 }
 
-function pushPractice(
+async function pushPractice(
   router: Router,
   verseId: string,
-  practiceSource?: string,
+  versesForChallenge: GameVerse[],
   verseIds?: string[],
   /** Voice-opened multi-verse: read and recite the full passage in hands-free. */
-  rangeMode?: "entire"
-): void {
+  rangeMode?: "entire",
+  /** When false, practice as level progression (e.g. Levels tab). */
+  asChallenge = true
+): Promise<void> {
   const ids = verseIds && verseIds.length > 1 ? verseIds : undefined;
+  let challengeId: string | undefined;
+  if (asChallenge && versesForChallenge.length > 0) {
+    const row = await upsertChallengeFromVerses(versesForChallenge);
+    challengeId = row?.id;
+  }
   router.push({
     pathname: "/practice-game",
     params: {
       verseId,
       mode: "speech",
+      ...(asChallenge && challengeId ? { session: "challenge", challengeId } : { session: "level" }),
       ...(ids ? { verseIds: ids.join(","), currentIndex: "0", rangeMode: rangeMode ?? "entire" } : {}),
-      ...(practiceSource ? { source: practiceSource } : {}),
     },
   });
 }
@@ -188,7 +196,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     speak,
     stopSpeak,
     setListening,
-    practiceSource = "challenge",
+    practiceAsChallenge = true,
     onAddToChallenges,
     onHandsFreeOff,
     handleBeforeFallback,
@@ -211,7 +219,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     looksLikeRef: looksLikeScriptureReferenceAttempt(text),
     directPractice: utteranceRequestsDirectPractice(text),
     directRead: utteranceRequestsDirectRead(text),
-    practiceSource,
+    practiceAsChallenge,
     pending: pendingVerse?.reference ?? null,
   });
 
@@ -240,11 +248,25 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     setListening(true);
   };
 
+  const versesFromIds = async (ids: string[]): Promise<GameVerse[]> => {
+    const { getVerseById } = await import("../database/queries");
+    const loaded = await Promise.all(ids.map((id) => getVerseById(id)));
+    return loaded.filter((v): v is GameVerse => v != null);
+  };
+
   const handlePendingVerseMenu = async (menuIntent: ReturnType<typeof parseVerseMenuCommand>): Promise<boolean> => {
     if (menuIntent === "practice") {
       const ids = pendingPracticeVerseIds?.length ? pendingPracticeVerseIds : [pendingVerse!.id];
       clearPending();
-      pushPractice(router, ids[0], practiceSource, ids.length > 1 ? ids : undefined);
+      const verses = await versesFromIds(ids);
+      await pushPractice(
+        router,
+        ids[0]!,
+        verses,
+        ids.length > 1 ? ids : undefined,
+        undefined,
+        practiceAsChallenge
+      );
       return true;
     }
     if (menuIntent === "read") {
@@ -306,10 +328,17 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     if (utteranceRequestsDirectPractice(text)) {
       clearPending();
       if (spoken.kind === "verse") {
-        pushPractice(router, spoken.verse.id, practiceSource);
+        await pushPractice(router, spoken.verse.id, [spoken.verse], undefined, undefined, practiceAsChallenge);
       } else {
         const ids = spoken.verses.map((v) => v.id);
-        pushPractice(router, spoken.verses[0].id, practiceSource, ids);
+        await pushPractice(
+          router,
+          spoken.verses[0]!.id,
+          spoken.verses,
+          ids,
+          undefined,
+          practiceAsChallenge
+        );
       }
       return;
     }

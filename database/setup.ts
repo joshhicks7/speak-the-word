@@ -1,6 +1,5 @@
 import * as SQLite from "expo-sqlite";
 import { GameVerse } from "../types/verse";
-import { isDefaultFavorite } from "./defaultFavorites";
 import { isPracticeEligible } from "./verseEligibility";
 
 type BibleVerse = {
@@ -52,6 +51,9 @@ export const setupDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
     await populateVerses(db);
   }
   await createIndexes(db);
+  const { ensureChallengesSchema, seedDefaultChallengesIfEmpty } = await import("./challenges");
+  await ensureChallengesSchema();
+  await seedDefaultChallengesIfEmpty();
   return db;
 };
 
@@ -209,7 +211,7 @@ const populateVerses = async (db: SQLite.SQLiteDatabase): Promise<void> => {
       verse.chapter,
       verse.verse,
       verse.text,
-      isDefaultFavorite(verse.book_name, verse.chapter, verse.verse) ? 1 : 0,
+      0,
       isPracticeEligible(verse) ? 1 : 0,
     ]);
   }

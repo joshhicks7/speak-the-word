@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from "path";
 import initSqlJs from "sql.js";
-import { isDefaultFavorite } from "../database/defaultFavorites";
 import { isPracticeEligible } from "../database/verseEligibility";
 
 type BibleVerse = {
@@ -65,7 +64,7 @@ async function main(): Promise<void> {
       verse.chapter,
       verse.verse,
       verse.text,
-      isDefaultFavorite(verse.book_name, verse.chapter, verse.verse) ? 1 : 0,
+      0,
       isPracticeEligible(verse) ? 1 : 0,
     ]);
     insert.reset();

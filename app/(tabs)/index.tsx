@@ -21,7 +21,6 @@ import {
   getLearningStats,
   getStreakStats,
   getBooks,
-  setFavorite,
   type BibleBook,
 } from "../../database/queries";
 import speechWrapper from "../../lib/speechRecognitionWrapper";
@@ -122,10 +121,18 @@ export default function HomeScreen() {
         speak,
         stopSpeak,
         setListening: setHomeVoiceListen,
-        practiceSource: "home",
+        practiceAsChallenge: true,
         onAddToChallenges: async (v, verseIds) => {
+          const { upsertChallengeFromVerses, setChallengeKind } = await import(
+            "../../database/challenges"
+          );
+          const { getVerseById } = await import("../../database/queries");
           const ids = verseIds?.length ? verseIds : [v.id];
-          await Promise.all(ids.map((id) => setFavorite(id, true)));
+          const verses = (await Promise.all(ids.map((id) => getVerseById(id)))).filter(
+            (x): x is NonNullable<typeof x> => x != null
+          );
+          const row = await upsertChallengeFromVerses(verses);
+          if (row) await setChallengeKind(row.id, "custom");
         },
         onHandsFreeOff: async () => {
           await setEnabled(false);
@@ -134,7 +141,7 @@ export default function HomeScreen() {
           if (parseGlobalCommand(spoken) === "today" && verse) {
             router.push({
               pathname: "/practice-game",
-              params: { verseId: verse.id, mode: "speech", source: "votd" },
+              params: { session: "level", verseId: verse.id, mode: "speech", source: "votd" },
             });
             return true;
           }
@@ -151,7 +158,7 @@ export default function HomeScreen() {
     if (!verse) return;
     router.push({
       pathname: "/practice-game",
-      params: { verseId: verse.id, mode: "speech", source: "votd" },
+      params: { session: "level", verseId: verse.id, mode: "speech", source: "votd" },
     });
   }, [router, verse]);
 
@@ -159,7 +166,7 @@ export default function HomeScreen() {
     if (nextVerse) {
       router.push({
         pathname: "/practice-game",
-        params: { verseId: nextVerse.id, mode: "speech" },
+        params: { session: "level", verseId: nextVerse.id, mode: "speech" },
       });
       return;
     }

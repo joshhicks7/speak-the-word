@@ -16,12 +16,17 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColors, type ThemeColors } from "../../constants/theme";
 import {
-  getFavoriteVerses,
   getVerseByBookChapterVerse,
-  setFavorite,
   getBooks,
   type BibleBook,
 } from "../../database/queries";
+import {
+  deleteChallenge,
+  loadStoredChallenges,
+  setChallengeKind,
+  upsertChallengeForBounds,
+  type StoredChallenge,
+} from "../../database/challenges";
 import { processHubVerseVoice } from "../../lib/hubVerseVoice";
 import { CommandMicListener } from "../../components/CommandMicListener";
 import { HubPendingVerseBanner } from "../../components/HubPendingVerseBanner";
@@ -29,18 +34,12 @@ import { useAppVoice } from "../../context/AppVoiceProvider";
 import speechWrapper from "../../lib/speechRecognitionWrapper";
 import type { GameVerse } from "../../types/verse";
 import {
-  groupFavoriteVersesIntoChallenges,
-  getChallengeReference,
   getChallengePreview,
   getChallengeScore,
-  isChallengeCompleted,
-  isChallengeUserAddedOrNonDefault,
   getChallengeVerseIds,
   getChallengeFirstVerse,
-  type ChallengeItem,
 } from "../../utils/challengeRanges";
-import { getUserFavoriteIds, migrateLegacyUserFavorites } from "../../utils/userFavorites";
-import { isDefaultFavorite } from "../../database/defaultFavorites";
+import { isChallengeCompleted } from "../../database/challenges";
 
 type CompletionFilter = "all" | "completed" | "not_completed";
 
@@ -55,12 +54,11 @@ export default function PracticeScreen() {
   const insets = useSafeAreaInsets();
   const colors = useThemeColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const [challenges, setChallenges] = useState<ChallengeItem[]>([]);
+  const [challenges, setChallenges] = useState<StoredChallenge[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [completionFilter, setCompletionFilter] = useState<CompletionFilter>("all");
   const [hideStarterDefaults, setHideStarterDefaults] = useState(false);
-  const [userFavoriteIds, setUserFavoriteIds] = useState<Set<string>>(() => new Set());
   const [filterSheetVisible, setFilterSheetVisible] = useState(false);
   const [openingStarter, setOpeningStarter] = useState(false);
   const [practiceVoiceListen, setPracticeVoiceListen] = useState(false);
@@ -76,16 +74,19 @@ export default function PracticeScreen() {
   }, []);
 
   const openChallenge = useCallback(
-    (item: ChallengeItem) => {
-      const verseIds = getChallengeVerseIds(item);
-      const firstVerse = getChallengeFirstVerse(item);
+    (stored: StoredChallenge) => {
+      const verseIds = getChallengeVerseIds(stored.item);
+      const firstVerse = getChallengeFirstVerse(stored.item);
       router.push({
         pathname: "/practice-game",
         params: {
+          session: "challenge",
+          challengeId: stored.challengeId,
           verseId: firstVerse.id,
           mode: "speech",
-          verseIds: verseIds.join(","),
-          currentIndex: "0",
+          ...(verseIds.length > 1
+            ? { verseIds: verseIds.join(","), currentIndex: "0" }
+            : {}),
         },
       });
     },
@@ -94,18 +95,7 @@ export default function PracticeScreen() {
 
   const load = useCallback(async (options?: { silent?: boolean }) => {
     if (!options?.silent) setLoading(true);
-    const list = await getFavoriteVerses();
-    const legacyUserIds = list
-      .filter((v) => {
-        const lastSpace = v.reference.lastIndexOf(" ");
-        const bookName = lastSpace >= 0 ? v.reference.slice(0, lastSpace) : v.reference;
-        return !isDefaultFavorite(bookName, v.chapter, v.verse);
-      })
-      .map((v) => v.id);
-    await migrateLegacyUserFavorites(legacyUserIds);
-    const userIds = await getUserFavoriteIds();
-    setUserFavoriteIds(userIds);
-    setChallenges(groupFavoriteVersesIntoChallenges(list));
+    setChallenges(await loadStoredChallenges());
     if (!options?.silent) setLoading(false);
   }, []);
 
@@ -141,11 +131,10 @@ export default function PracticeScreen() {
   }, [loading, pendingVerse, announceHubIntro]);
 
   const handleRemove = useCallback(
-    (item: ChallengeItem) => {
-      const ref = getChallengeReference(item);
-      const ids = getChallengeVerseIds(item);
+    (stored: StoredChallenge) => {
+      const ref = stored.reference;
       Alert.alert(
-        "Remove this verse?",
+        "Remove this challenge?",
         `Remove "${ref}" from My Challenges?`,
         [
           { text: "Cancel", style: "cancel" },
@@ -153,7 +142,7 @@ export default function PracticeScreen() {
             text: "Remove",
             style: "destructive",
             onPress: async () => {
-              for (const id of ids) await setFavorite(id, false);
+              await deleteChallenge(stored.challengeId);
               load();
             },
           },
@@ -173,10 +162,26 @@ export default function PracticeScreen() {
           Alert.alert("Verse unavailable", "We couldn't open that verse. Try adding one instead.");
           return;
         }
-        await setFavorite(found.id, true);
+        const row = await upsertChallengeForBounds(
+          {
+            startBook: found.book,
+            startChapter: found.chapter,
+            startVerse: found.verse,
+            endBook: found.book,
+            endChapter: found.chapter,
+            endVerse: found.verse,
+          },
+          { kind: "custom" }
+        );
+        await setChallengeKind(row.id, "custom");
         router.push({
           pathname: "/practice-game",
-          params: { verseId: found.id, mode: "speech" },
+          params: {
+            session: "challenge",
+            challengeId: row.id,
+            verseId: found.id,
+            mode: "speech",
+          },
         });
       } catch {
         Alert.alert("Something went wrong", "Please try again.");
@@ -191,22 +196,24 @@ export default function PracticeScreen() {
     let list = challenges;
     const q = searchQuery.trim().toLowerCase();
     if (q) {
-      list = list.filter((item) => {
-        const ref = getChallengeReference(item).toLowerCase();
-        const preview = getChallengePreview(item).toLowerCase();
+      list = list.filter((stored) => {
+        const ref = stored.reference.toLowerCase();
+        const preview = getChallengePreview(stored.item).toLowerCase();
         return ref.includes(q) || preview.includes(q);
       });
     }
     if (completionFilter === "completed") {
-      list = list.filter((item) => isChallengeCompleted(item));
+      list = list.filter((stored) => isChallengeCompleted(stored));
     } else if (completionFilter === "not_completed") {
-      list = list.filter((item) => !isChallengeCompleted(item));
+      list = list.filter((stored) => !isChallengeCompleted(stored));
     }
     if (hideStarterDefaults) {
-      list = list.filter((item) => isChallengeUserAddedOrNonDefault(item, userFavoriteIds));
+      list = list.filter(
+        (stored) => stored.kind === "custom" || stored.lastAttemptedAt != null
+      );
     }
     return list;
-  }, [challenges, searchQuery, completionFilter, hideStarterDefaults, userFavoriteIds]);
+  }, [challenges, searchQuery, completionFilter, hideStarterDefaults]);
 
   const handlePracticeVoice = useCallback(
     async (text: string) => {
@@ -221,10 +228,18 @@ export default function PracticeScreen() {
         speak,
         stopSpeak,
         setListening: setPracticeVoiceListen,
-        practiceSource: "challenge",
+        practiceAsChallenge: true,
         onAddToChallenges: async (verse, verseIds) => {
+          const { upsertChallengeFromVerses, setChallengeKind } = await import(
+            "../../database/challenges"
+          );
+          const { getVerseById } = await import("../../database/queries");
           const ids = verseIds?.length ? verseIds : [verse.id];
-          await Promise.all(ids.map((id) => setFavorite(id, true)));
+          const verses = (await Promise.all(ids.map((id) => getVerseById(id)))).filter(
+            (v): v is GameVerse => v != null
+          );
+          const row = await upsertChallengeFromVerses(verses);
+          if (row) await setChallengeKind(row.id, "custom");
           await load({ silent: true });
         },
       });
@@ -375,20 +390,18 @@ export default function PracticeScreen() {
       ) : (
         <FlatList
           data={filteredChallenges}
-          keyExtractor={(item) =>
-            item.type === "single" ? item.verse.id : item.verses.map((v) => v.id).join(",")
-          }
+          keyExtractor={(stored) => stored.challengeId}
           contentContainerStyle={styles.list}
           showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => {
-            const ref = getChallengeReference(item);
-            const score = getChallengeScore(item);
-            const completed = isChallengeCompleted(item);
+          renderItem={({ item: stored }) => {
+            const ref = stored.reference;
+            const score = stored.bestEver;
+            const completed = isChallengeCompleted(stored);
             return (
               <TouchableOpacity
                 style={[styles.card, completed && styles.cardDone]}
-                onPress={() => openChallenge(item)}
-                onLongPress={() => handleRemove(item)}
+                onPress={() => openChallenge(stored)}
+                onLongPress={() => handleRemove(stored)}
                 delayLongPress={400}
                 activeOpacity={0.8}
                 accessibilityRole="button"
@@ -407,7 +420,7 @@ export default function PracticeScreen() {
                   </View>
                 </View>
                 <Text style={styles.preview} numberOfLines={2}>
-                  {getChallengePreview(item)}
+                  {getChallengePreview(stored.item)}
                 </Text>
                 <View style={styles.ctaRow}>
                   <Text style={styles.cta}>{completed ? "Speak again" : "Practice"}</Text>

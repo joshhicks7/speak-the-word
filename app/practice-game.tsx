@@ -31,9 +31,15 @@ import {
   getStreakActionDates,
   getStreakStats,
   recordUserAction,
-  toggleFavorite,
-  setFavorite,
 } from "../database/queries";
+import {
+  getChallengeById,
+  getNextChallengeAfter,
+  loadVersesForChallenge,
+  recordChallengeAttempt,
+  setChallengeKind,
+  type ChallengeRow,
+} from "../database/challenges";
 import { CoachBanner } from "../components/CoachBanner";
 import { CommandMicListener } from "../components/CommandMicListener";
 import { useAppVoice } from "../context/AppVoiceProvider";
@@ -84,11 +90,15 @@ export default function PracticeGameScreen() {
     currentIndex?: string;
     source?: string;
     rangeMode?: string;
+    session?: string;
+    challengeId?: string;
   }>();
   const router = useRouter();
   const navigation = useNavigation();
   const headerHeight = useHeaderHeight();
-  const { verseId, mode, verseIds, currentIndex, source, rangeMode: rangeModeParam } = params;
+  const { verseId, mode, verseIds, currentIndex, source, rangeMode: rangeModeParam, session, challengeId } =
+    params;
+  const isChallengeSession = session === "challenge" && !!challengeId;
   const voiceOpenedEntireRange = rangeModeParam === "entire";
   /** Preserved when chaining Next so deep links can prefer type if we add it later. */
   const navigationMode = mode === "type" ? "type" : "speech";
@@ -105,6 +115,7 @@ export default function PracticeGameScreen() {
   const currentIdx = currentIndex != null ? parseInt(currentIndex, 10) : 0;
 
   const [verse, setVerse] = useState<GameVerse | null>(null);
+  const [challengeRow, setChallengeRow] = useState<ChallengeRow | null>(null);
   const [rangeVerses, setRangeVerses] = useState<GameVerse[] | null>(null);
   const [practiceEntireRange, setPracticeEntireRange] = useState(false);
   /** When set, we're in verse-by-verse and this is the index we're on (so Next uses it). */
@@ -168,40 +179,77 @@ export default function PracticeGameScreen() {
   }, []);
 
   useEffect(() => {
+    if (isChallengeSession && challengeId) {
+      void getChallengeById(challengeId).then(setChallengeRow);
+    } else {
+      setChallengeRow(null);
+    }
+  }, [isChallengeSession, challengeId]);
+
+  useEffect(() => {
     if (!verseId) {
       setLoading(false);
       return;
     }
-    if (verseIdsList.length > 1) {
-      Promise.all(verseIdsList.map((id) => getVerseById(id))).then((vs) => {
-        const valid = vs.filter((v): v is GameVerse => v != null);
-        if (valid.length > 1) {
-          setRangeVerses(valid);
-          const idx = currentIdx >= 0 && currentIdx < valid.length ? currentIdx : 0;
-          const cameFromVerseByVerseNext = currentIdx > 0;
-          if (cameFromVerseByVerseNext) {
-            setVerse(valid[idx]);
-            setPracticeEntireRange(false);
-          } else if (handsFree && !voiceOpenedEntireRange) {
-            setVerse(valid[0]!);
-            setPracticeEntireRange(false);
-            setSelectedRangeIndex(0);
-          } else {
-            setVerse(buildCombinedVerse(valid));
-            setPracticeEntireRange(true);
-          }
-        } else if (valid.length === 1) {
-          setVerse(valid[0]);
+    const loadFromChallenge = async (): Promise<GameVerse[] | null> => {
+      if (!isChallengeSession || !challengeId || verseIdsList.length > 0) return null;
+      const row = await getChallengeById(challengeId);
+      if (!row) return null;
+      setChallengeRow(row);
+      return loadVersesForChallenge(row);
+    };
+
+    const applyRangeVerses = (valid: GameVerse[]) => {
+      if (valid.length > 1) {
+        setRangeVerses(valid);
+        const idx = currentIdx >= 0 && currentIdx < valid.length ? currentIdx : 0;
+        const cameFromVerseByVerseNext = currentIdx > 0;
+        if (cameFromVerseByVerseNext) {
+          setVerse(valid[idx]);
+          setPracticeEntireRange(false);
+        } else if (handsFree && !voiceOpenedEntireRange) {
+          setVerse(valid[0]!);
+          setPracticeEntireRange(false);
+          setSelectedRangeIndex(0);
+        } else if (voiceOpenedEntireRange) {
+          setVerse(buildCombinedVerse(valid));
+          setPracticeEntireRange(true);
+        } else {
+          setVerse(valid[idx] ?? valid[0]!);
+          setPracticeEntireRange(false);
         }
-        setLoading(false);
-      });
-    } else {
-      getVerseById(verseId).then((v) => {
-        setVerse(v);
-        setLoading(false);
-      });
-    }
-  }, [verseId, verseIdsList.join(","), buildCombinedVerse, handsFree, voiceOpenedEntireRange]);
+      } else if (valid.length === 1) {
+        setVerse(valid[0]!);
+      }
+      setLoading(false);
+    };
+
+    void (async () => {
+      const fromChallenge = await loadFromChallenge();
+      if (fromChallenge && fromChallenge.length > 0) {
+        applyRangeVerses(fromChallenge);
+        return;
+      }
+      if (verseIdsList.length > 1) {
+        const vs = await Promise.all(verseIdsList.map((id) => getVerseById(id)));
+        const valid = vs.filter((v): v is GameVerse => v != null);
+        applyRangeVerses(valid);
+        return;
+      }
+      const v = await getVerseById(verseId);
+      setVerse(v);
+      setLoading(false);
+    })();
+  }, [
+    verseId,
+    verseIdsList.join(","),
+    buildCombinedVerse,
+    handsFree,
+    voiceOpenedEntireRange,
+    isChallengeSession,
+    challengeId,
+    currentIdx,
+  ]);
 
   const leaveIntroToHome = useCallback(async () => {
     if (isWelcomeDemo) await setWelcomeComplete();
@@ -427,21 +475,13 @@ export default function PracticeGameScreen() {
   }, [rangeVerses, buildCombinedVerse]);
 
   const handleToggleFavorite = useCallback(async () => {
-    if (!verse) return;
-    if (practiceEntireRange && rangeVerses && rangeVerses.length > 1) {
-      const allFavorited = rangeVerses.every((v) => v.isFavorite);
-      const next = !allFavorited;
-      await Promise.all(rangeVerses.map((v) => setFavorite(v.id, next)));
-      const updatedRange = rangeVerses.map((v) => ({ ...v, isFavorite: next }));
-      setRangeVerses(updatedRange);
-      setVerse(buildCombinedVerse(updatedRange));
-      return;
-    }
-    const verseId = verse.id.includes(",") ? verse.id.split(",")[0] : verse.id;
-    await toggleFavorite(verseId);
-    const updated = await getVerseById(verseId);
-    if (updated) setVerse(updated);
-  }, [verse, practiceEntireRange, rangeVerses, buildCombinedVerse]);
+    if (!isChallengeSession || !challengeId) return;
+    const row = challengeRow ?? (await getChallengeById(challengeId));
+    if (!row) return;
+    const nextKind = row.kind === "custom" ? "default" : "custom";
+    await setChallengeKind(challengeId, nextKind);
+    setChallengeRow({ ...row, kind: nextKind });
+  }, [isChallengeSession, challengeId, challengeRow]);
 
   const handleNext = useCallback(async () => {
     setStreakCongrats(null);
@@ -453,21 +493,53 @@ export default function PracticeGameScreen() {
       exitPractice();
       return;
     }
-    // From My Challenges (verseIds passed): only go to next verse in this challenge, then back
-    if (verseIdsList.length > 0) {
+    if (isChallengeSession && challengeId) {
+      const ids =
+        verseIdsList.length > 0
+          ? verseIdsList
+          : rangeVerses?.map((v) => v.id) ?? [];
       const idx = selectedRangeIndex ?? currentIdx;
-      if (idx < verseIdsList.length - 1) {
-        const nextId = verseIdsList[idx + 1];
+      if (ids.length > 1 && !practiceEntireRange && idx < ids.length - 1) {
+        const nextId = ids[idx + 1]!;
         router.replace({
           pathname: "/practice-game",
-          params: { verseId: nextId, mode: navigationMode, verseIds, currentIndex: String(idx + 1) },
+          params: {
+            session: "challenge",
+            challengeId,
+            verseId: nextId,
+            mode: navigationMode,
+            verseIds: ids.join(","),
+            currentIndex: String(idx + 1),
+          },
         });
-      } else {
-        exitPractice();
+        return;
       }
+      const nextChallenge = await getNextChallengeAfter(challengeId);
+      if (nextChallenge) {
+        const verses = await loadVersesForChallenge(nextChallenge);
+        const first = verses[0];
+        if (!first) {
+          exitPractice();
+          return;
+        }
+        router.replace({
+          pathname: "/practice-game",
+          params: {
+            session: "challenge",
+            challengeId: nextChallenge.id,
+            verseId: first.id,
+            mode: navigationMode,
+            ...(verses.length > 1
+              ? { verseIds: verses.map((v) => v.id).join(","), currentIndex: "0" }
+              : {}),
+          },
+        });
+        return;
+      }
+      exitPractice();
       return;
     }
-    // From Levels (no verseIds): use global next-verse progression
+    // Level session: global next-verse progression
     if (verse) {
       const v = await getNextGameVerse(verse.id);
       if (v) {
@@ -481,7 +553,23 @@ export default function PracticeGameScreen() {
     } else {
       exitPractice();
     }
-  }, [verse, verseIdsList, currentIdx, selectedRangeIndex, verseIds, navigationMode, practiceEntireRange, isIntro, isWelcomeDemo, leaveIntroToHome, exitPractice, router]);
+  }, [
+    verse,
+    verseIdsList,
+    rangeVerses,
+    currentIdx,
+    selectedRangeIndex,
+    verseIds,
+    navigationMode,
+    practiceEntireRange,
+    isIntro,
+    isWelcomeDemo,
+    isChallengeSession,
+    challengeId,
+    leaveIntroToHome,
+    exitPractice,
+    router,
+  ]);
 
   const resetToMemorize = useCallback(() => {
     setStreakCongrats(null);
@@ -613,8 +701,9 @@ export default function PracticeGameScreen() {
         practiceEntireRange && rangeVerses?.length ? rangeVerses.map((v) => v.id) : [verse.id];
       const metadata = {
         reference: verse.reference,
-        source: isVotd ? "votd" : isIntro ? "intro" : verseIdsList.length > 0 ? "challenge" : "level",
+        source: isVotd ? "votd" : isIntro ? "intro" : isChallengeSession ? "challenge" : "level",
         practiceEntireRange,
+        challengeId: isChallengeSession ? challengeId : undefined,
       };
       const recordAttempt = async () => {
         for (const id of actionVerseIds) {
@@ -632,16 +721,23 @@ export default function PracticeGameScreen() {
             await recordUserAction({ actionType: "perfect_score", verseId: id, scorePercent: s.percent, metadata });
           }
         }
+        if (isChallengeSession && challengeId) {
+          const updated = await recordChallengeAttempt(challengeId, s.percent);
+          if (updated) setChallengeRow(updated);
+          return;
+        }
         if (passed) {
           if (practiceEntireRange && rangeVerses?.length) {
             await Promise.all(rangeVerses.map((v) => markVerseCompleted(v.id, elapsed, s.percent)));
           } else {
-            await markVerseCompleted(verse.id, elapsed, s.percent);
+            const levelVerseId = verse.id.includes(",") ? verse.id.split(",")[0]! : verse.id;
+            await markVerseCompleted(levelVerseId, elapsed, s.percent);
           }
         } else if (practiceEntireRange && rangeVerses?.length) {
           await Promise.all(rangeVerses.map((v) => updateVerseScore(v.id, s.percent)));
         } else {
-          await updateVerseScore(verse.id, s.percent);
+          const levelVerseId = verse.id.includes(",") ? verse.id.split(",")[0]! : verse.id;
+          await updateVerseScore(levelVerseId, s.percent);
         }
       };
       checkNewStreakDay(recordAttempt).then((streak) => {
@@ -655,7 +751,16 @@ export default function PracticeGameScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
       }
     },
-    [verse, practiceEntireRange, rangeVerses, isVotd, isIntro, passPercent, verseIdsList.length]
+    [
+      verse,
+      practiceEntireRange,
+      rangeVerses,
+      isVotd,
+      isIntro,
+      passPercent,
+      isChallengeSession,
+      challengeId,
+    ]
   );
 
   useEffect(() => {
@@ -701,10 +806,8 @@ export default function PracticeGameScreen() {
 
   const passedThisRound = score !== null && score.percent >= passPercent;
   const showConfetti = phase === "result" && passedThisRound;
-  const isFavorited =
-    practiceEntireRange && rangeVerses && rangeVerses.length > 1
-      ? rangeVerses.every((v) => v.isFavorite)
-      : verse.isFavorite;
+  const isFavorited = isChallengeSession && challengeRow?.kind === "custom";
+  const showChallengeFavorite = isChallengeSession && !!challengeId;
 
   return (
     <KeyboardAvoidingView
@@ -720,22 +823,24 @@ export default function PracticeGameScreen() {
       keyboardDismissMode="on-drag"
     >
       <Animated.View style={{ opacity: contentOpacity }}>
-      {phase === "memorize" ? (
+      {phase === "memorize" || phase === "result" ? (
         <View style={styles.memorizeHeaderRow}>
           <Text style={[styles.ref, styles.refInRow, { color: colors.primary }]}>{verse.reference}</Text>
-          <Pressable
-            onPress={() => void handleToggleFavorite()}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            style={styles.favoriteBtn}
-            accessibilityRole="button"
-            accessibilityLabel={isFavorited ? "Remove from My Challenges" : "Save to My Challenges"}
-          >
-            <Ionicons
-              name={isFavorited ? "heart" : "heart-outline"}
-              size={28}
-              color={isFavorited ? colors.primary : colors.textMuted}
-            />
-          </Pressable>
+          {showChallengeFavorite ? (
+            <Pressable
+              onPress={() => void handleToggleFavorite()}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={styles.favoriteBtn}
+              accessibilityRole="button"
+              accessibilityLabel={isFavorited ? "Remove from My Challenges" : "Save to My Challenges"}
+            >
+              <Ionicons
+                name={isFavorited ? "heart" : "heart-outline"}
+                size={28}
+                color={isFavorited ? colors.primary : colors.textMuted}
+              />
+            </Pressable>
+          ) : null}
         </View>
       ) : (
         <Text style={[styles.ref, { color: colors.primary }]}>{verse.reference}</Text>
