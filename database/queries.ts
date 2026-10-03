@@ -140,6 +140,44 @@ export const getCompletionStats = async (): Promise<{
   return { total: result?.total ?? 0, completed: result?.completed ?? 0 };
 };
 
+async function getMostPracticedBookName(db: Awaited<ReturnType<typeof getDatabase>>): Promise<string | null> {
+  const byBook = new Map<number, number>();
+
+  const levelRows = await db.getAllAsync<{ book: number; cnt: number }>(
+    `SELECT book, COUNT(*) as cnt FROM verses WHERE completed_at IS NOT NULL AND ${PRACTICE_ELIGIBLE_WHERE} GROUP BY book`
+  );
+  for (const row of levelRows) {
+    byBook.set(row.book, (byBook.get(row.book) ?? 0) + row.cnt);
+  }
+
+  try {
+    const challengeRows = await db.getAllAsync<{ book: number; cnt: number }>(
+      "SELECT start_book as book, COUNT(*) as cnt FROM challenges WHERE last_attempted_at IS NOT NULL GROUP BY start_book"
+    );
+    for (const row of challengeRows) {
+      byBook.set(row.book, (byBook.get(row.book) ?? 0) + row.cnt);
+    }
+  } catch {
+    // challenges table not created yet
+  }
+
+  let topBook: number | null = null;
+  let topCount = 0;
+  for (const [book, cnt] of byBook) {
+    if (cnt > topCount) {
+      topCount = cnt;
+      topBook = book;
+    }
+  }
+  if (topBook == null) return null;
+
+  const nameRow = await db.getFirstAsync<{ book_name: string }>(
+    "SELECT book_name FROM verses WHERE book = ? LIMIT 1",
+    [topBook]
+  );
+  return nameRow?.book_name ?? null;
+}
+
 export const getLearningStats = async (): Promise<{
   totalVerses: number;
   completed: number;
@@ -148,13 +186,11 @@ export const getLearningStats = async (): Promise<{
   perfectCount: number;
 }> => {
   const db = await getDatabase();
-  const [countResult, mostBookResult, perfectResult] = await Promise.all([
+  const [countResult, mostLearnedBook, perfectResult] = await Promise.all([
     db.getFirstAsync<{ total: number; completed: number }>(
       `SELECT COUNT(*) as total, SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses WHERE ${PRACTICE_ELIGIBLE_WHERE}`
     ),
-    db.getFirstAsync<{ book_name: string }>(
-      "SELECT book_name FROM verses WHERE completed_at IS NOT NULL GROUP BY book ORDER BY COUNT(*) DESC LIMIT 1"
-    ),
+    getMostPracticedBookName(db),
     db.getFirstAsync<{ perfect: number }>(
       "SELECT COUNT(*) as perfect FROM verses WHERE completed_at IS NOT NULL AND completion_score = 100"
     ),
@@ -166,7 +202,7 @@ export const getLearningStats = async (): Promise<{
     totalVerses: total,
     completed,
     percent,
-    mostLearnedBook: mostBookResult?.book_name ?? null,
+    mostLearnedBook,
     perfectCount: perfectResult?.perfect ?? 0,
   };
 };

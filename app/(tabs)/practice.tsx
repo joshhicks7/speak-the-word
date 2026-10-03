@@ -22,6 +22,7 @@ import {
 } from "../../database/queries";
 import {
   deleteChallenge,
+  isChallengeCompleted,
   loadStoredChallenges,
   setChallengeKind,
   upsertChallengeForBounds,
@@ -35,11 +36,9 @@ import speechWrapper from "../../lib/speechRecognitionWrapper";
 import type { GameVerse } from "../../types/verse";
 import {
   getChallengePreview,
-  getChallengeScore,
   getChallengeVerseIds,
   getChallengeFirstVerse,
 } from "../../utils/challengeRanges";
-import { isChallengeCompleted } from "../../database/challenges";
 
 type CompletionFilter = "all" | "completed" | "not_completed";
 

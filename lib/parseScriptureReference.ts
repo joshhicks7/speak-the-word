@@ -276,7 +276,11 @@ export async function resolveCompactScriptureNumber(
   if (!Number.isNaN(asChapter) && chapters.includes(asChapter)) {
     return { chapter: asChapter, verse: null };
   }
-  for (const { chapter, verse } of splitCompactChapterVerseCandidates(compactNumber)) {
+  const splits = splitCompactChapterVerseCandidates(compactNumber);
+  // STT often glues "20 13" → "2013"; try larger chapter first (20:13 before 2:13).
+  splits.sort((a, b) => b.chapter - a.chapter || a.verse - b.verse);
+  for (const { chapter, verse } of splits) {
+    if (!chapters.includes(chapter)) continue;
     const row = await getVerseByBookChapterVerse(book, chapter, verse);
     if (row) return { chapter, verse };
   }
