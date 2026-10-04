@@ -8,6 +8,7 @@ import speechWrapper from "../lib/speechRecognitionWrapper";
 const COMMAND_CONTEXTUAL_STRINGS = [
   "advance",
   "next verse",
+  "next challenge",
   "continue",
   "try again",
   "try more",
@@ -18,6 +19,13 @@ const COMMAND_CONTEXTUAL_STRINGS = [
   "quit",
   "finish",
   "exit",
+  "back",
+  "restart",
+  "start over",
+  "mic off",
+  "microphone off",
+  "manual mode",
+  "hands free off",
   "begin",
   "ready",
   "practice",
@@ -38,6 +46,8 @@ type Props = {
   onTranscript: (text: string) => void;
   /** When a hub verse is loaded, accept interim STT for exact "read" / "practice" / "add". */
   verseMenuPending?: boolean;
+  /** Prefer a hypothesis that parses as Scripture when the engine sends multiple transcripts. */
+  pickReferenceTranscript?: (primary: string, alternatives: string[]) => string;
 };
 
 /**
@@ -55,19 +65,26 @@ function shouldAcceptCommandTranscript(
   return false;
 }
 
-function CommandMicListenerInner({ active, onTranscript, verseMenuPending = false }: Props) {
+function CommandMicListenerInner({
+  active,
+  onTranscript,
+  verseMenuPending = false,
+  pickReferenceTranscript,
+}: Props) {
   const speech = speechWrapper.module!;
   const { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } = speech;
 
   const activeRef = useRef(active);
   const verseMenuPendingRef = useRef(verseMenuPending);
   const onTranscriptRef = useRef(onTranscript);
+  const pickReferenceTranscriptRef = useRef(pickReferenceTranscript);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastFiredRef = useRef("");
 
   activeRef.current = active;
   verseMenuPendingRef.current = verseMenuPending;
   onTranscriptRef.current = onTranscript;
+  pickReferenceTranscriptRef.current = pickReferenceTranscript;
 
   const clearRestartTimer = useCallback(() => {
     if (restartTimerRef.current != null) {
@@ -125,8 +142,12 @@ function CommandMicListenerInner({ active, onTranscript, verseMenuPending = fals
     if (!activeRef.current) return;
     const alternatives = event.results.map((r) => r.transcript?.trim() ?? "").filter(Boolean);
     const last = event.results[event.results.length - 1];
-    const text = last?.transcript?.trim() ?? "";
-    if (!text) return;
+    const primary = last?.transcript?.trim() ?? "";
+    if (!primary) return;
+
+    const text = pickReferenceTranscriptRef.current
+      ? pickReferenceTranscriptRef.current(primary, alternatives)
+      : primary;
 
     logVoicePhrase(text, {
       isFinal: event.isFinal ?? false,

@@ -35,8 +35,9 @@ export function redirectSystemPath({
       return `/open?book=${book}&chapter=${chapter}&verse=${verse}&practice=1`;
     }
 
+    // Route through app/index so first-time welcome is not skipped.
     if (pathOnly === "home" || pathOnly === "") {
-      return "/(tabs)";
+      return "/";
     }
     if (pathOnly === "challenges") {
       return "/(tabs)/practice";
@@ -47,6 +48,6 @@ export function redirectSystemPath({
 
     return routePath.startsWith("/") ? routePath : `/${routePath}`;
   } catch {
-    return "/(tabs)";
+    return "/";
   }
 }

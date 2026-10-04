@@ -78,7 +78,6 @@ function bookAliases(bookName: string): string[] {
   }
   if (lower === "song of solomon") {
     set.add("song of songs");
-    set.add("songs");
   }
   if (lower.startsWith("1 ")) set.add(lower.replace(/^1 /, "first "));
   if (lower.startsWith("2 ")) set.add(lower.replace(/^2 /, "second "));
@@ -97,6 +96,10 @@ const BOOK_SPOKEN_NICKNAMES: Readonly<Record<string, string>> = {
   gen: "genesis",
   ps: "psalm",
   psa: "psalm",
+  palm: "psalm",
+  palms: "psalm",
+  /** STT often hears “Psalms 23” as “songs 23”. */
+  songs: "psalm",
   pro: "proverbs",
   prov: "proverbs",
   rev: "revelation",
@@ -406,4 +409,27 @@ export function utteranceContainsScriptureReference(
   options?: ParseScriptureReferenceOptions
 ): boolean {
   return parseScriptureReference(spoken, books, options) != null;
+}
+
+/** Prefer an STT alternative that parses as Scripture (engine often ranks “Psalms 23” above “songs 23”). */
+export function pickBestReferenceTranscript(
+  primary: string,
+  alternatives: string[],
+  books: BibleBook[],
+  options?: ParseScriptureReferenceOptions
+): string {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  for (const raw of [...alternatives, primary]) {
+    const t = raw.trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push(t);
+  }
+  for (const c of candidates) {
+    if (parseScriptureReference(c, books, options)) return c;
+  }
+  return primary.trim();
 }

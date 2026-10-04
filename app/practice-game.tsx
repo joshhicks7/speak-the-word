@@ -30,11 +30,12 @@ import {
   updateVerseScore,
   getStreakActionDates,
   getStreakStats,
-  recordUserAction,
+  recordUserActions,
+  type RecordUserActionInput,
 } from "../database/queries";
 import {
   getChallengeById,
-  getNextChallengeAfter,
+  getNextIncompleteChallenge,
   loadVersesForChallenge,
   recordChallengeAttempt,
   setChallengeKind,
@@ -48,6 +49,7 @@ import { ensureVoiceAudioMode } from "../lib/voiceCue";
 import { isSpeaking } from "../lib/voiceFeedback";
 import {
   isPracticeExitPhrase,
+  isPracticeRestartPhrase,
   parseInterruptSpeechCommand,
   parsePracticeResultCommand,
   parseVoiceCommand,
@@ -99,14 +101,15 @@ export default function PracticeGameScreen() {
   const { verseId, mode, verseIds, currentIndex, source, rangeMode: rangeModeParam, session, challengeId } =
     params;
   const isChallengeSession = session === "challenge" && !!challengeId;
-  const voiceOpenedEntireRange = rangeModeParam === "entire";
+  /** Explicit verse-by-verse entry (e.g. next verse in a split passage). Default is whole passage. */
+  const openedVerseByVerse = rangeModeParam === "verse";
   /** Preserved when chaining Next so deep links can prefer type if we add it later. */
   const navigationMode = mode === "type" ? "type" : "speech";
   const isVotd = source === "votd";
   const isIntro = source === "intro";
   const isWelcomeDemo = source === "welcome-demo";
   const passPercent = isIntro || isWelcomeDemo ? 75 : 80;
-  const { prefs: voicePrefs, speak, playCue, stopSpeak, getSpeechGeneration, speechActive } =
+  const { prefs: voicePrefs, speak, playCue, stopSpeak, getSpeechGeneration, speechActive, setEnabled } =
     useAppVoice();
   const handsFree = voicePrefs.handsFreeEnabled && speechWrapper.available;
   const colors = useThemeColors();
@@ -203,20 +206,15 @@ export default function PracticeGameScreen() {
       if (valid.length > 1) {
         setRangeVerses(valid);
         const idx = currentIdx >= 0 && currentIdx < valid.length ? currentIdx : 0;
-        const cameFromVerseByVerseNext = currentIdx > 0;
-        if (cameFromVerseByVerseNext) {
-          setVerse(valid[idx]);
-          setPracticeEntireRange(false);
-        } else if (handsFree && !voiceOpenedEntireRange) {
-          setVerse(valid[0]!);
-          setPracticeEntireRange(false);
-          setSelectedRangeIndex(0);
-        } else if (voiceOpenedEntireRange) {
-          setVerse(buildCombinedVerse(valid));
-          setPracticeEntireRange(true);
-        } else {
+        const verseByVerse = openedVerseByVerse || currentIdx > 0;
+        if (verseByVerse) {
           setVerse(valid[idx] ?? valid[0]!);
           setPracticeEntireRange(false);
+          setSelectedRangeIndex(idx);
+        } else {
+          setVerse(buildCombinedVerse(valid));
+          setPracticeEntireRange(true);
+          setSelectedRangeIndex(null);
         }
       } else if (valid.length === 1) {
         setVerse(valid[0]!);
@@ -244,8 +242,7 @@ export default function PracticeGameScreen() {
     verseId,
     verseIdsList.join(","),
     buildCombinedVerse,
-    handsFree,
-    voiceOpenedEntireRange,
+    openedVerseByVerse,
     isChallengeSession,
     challengeId,
     currentIdx,
@@ -510,11 +507,12 @@ export default function PracticeGameScreen() {
             mode: navigationMode,
             verseIds: ids.join(","),
             currentIndex: String(idx + 1),
+            rangeMode: "verse",
           },
         });
         return;
       }
-      const nextChallenge = await getNextChallengeAfter(challengeId);
+      const nextChallenge = await getNextIncompleteChallenge(challengeId);
       if (nextChallenge) {
         const verses = await loadVersesForChallenge(nextChallenge);
         const first = verses[0];
@@ -530,7 +528,11 @@ export default function PracticeGameScreen() {
             verseId: first.id,
             mode: navigationMode,
             ...(verses.length > 1
-              ? { verseIds: verses.map((v) => v.id).join(","), currentIndex: "0" }
+              ? {
+                  verseIds: verses.map((v) => v.id).join(","),
+                  currentIndex: "0",
+                  rangeMode: "entire",
+                }
               : {}),
           },
         });
@@ -632,6 +634,10 @@ export default function PracticeGameScreen() {
       setCommandListen(false);
       stopSpeak();
       setStreakCongrats(null);
+      if (intent === "handsFreeOff") {
+        await setEnabled(false);
+        return;
+      }
       if (intent === "begin" && phase === "memorize") {
         handleReady();
         return;
@@ -640,11 +646,11 @@ export default function PracticeGameScreen() {
         exitPractice();
         return;
       }
-      if (intent === "again" || intent === "tryMore" || intent === "repeat") {
-        if (intent === "again") {
-          resetToMemorize();
-          return;
-        }
+      if (intent === "restart" || intent === "again") {
+        resetToMemorize();
+        return;
+      }
+      if (intent === "tryMore" || intent === "repeat") {
         if (intent === "repeat" && verse) {
           await speakPassagePreview(getSpeechGeneration());
           await playCue();
@@ -686,6 +692,7 @@ export default function PracticeGameScreen() {
       speechActive,
       speakPassagePreview,
       getSpeechGeneration,
+      setEnabled,
     ]
   );
 
@@ -706,21 +713,23 @@ export default function PracticeGameScreen() {
         challengeId: isChallengeSession ? challengeId : undefined,
       };
       const recordAttempt = async () => {
+        const actions: RecordUserActionInput[] = [];
         for (const id of actionVerseIds) {
-          await recordUserAction({ actionType: "attempted_verse", verseId: id, scorePercent: s.percent, metadata });
-          await recordUserAction({
+          actions.push({ actionType: "attempted_verse", verseId: id, scorePercent: s.percent, metadata });
+          actions.push({
             actionType: inputMode === "speech" ? "spoke_verse" : "wrote_verse",
             verseId: id,
             scorePercent: s.percent,
             metadata,
           });
           if (passed) {
-            await recordUserAction({ actionType: "completed_verse", verseId: id, scorePercent: s.percent, metadata });
+            actions.push({ actionType: "completed_verse", verseId: id, scorePercent: s.percent, metadata });
           }
           if (s.percent === 100) {
-            await recordUserAction({ actionType: "perfect_score", verseId: id, scorePercent: s.percent, metadata });
+            actions.push({ actionType: "perfect_score", verseId: id, scorePercent: s.percent, metadata });
           }
         }
+        await recordUserActions(actions);
         if (isChallengeSession && challengeId) {
           const updated = await recordChallengeAttempt(challengeId, s.percent);
           if (updated) setChallengeRow(updated);
@@ -740,11 +749,15 @@ export default function PracticeGameScreen() {
           await updateVerseScore(levelVerseId, s.percent);
         }
       };
-      checkNewStreakDay(recordAttempt).then((streak) => {
-        if (streak && phaseRef.current === "result") {
-          setStreakCongrats(streak);
-        }
-      });
+      void checkNewStreakDay(recordAttempt)
+        .then((streak) => {
+          if (streak && phaseRef.current === "result") {
+            setStreakCongrats(streak);
+          }
+        })
+        .catch(() => {
+          // Avoid unhandled rejection if SQLite was busy; data may retry on next attempt.
+        });
       if (passed) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       } else {
@@ -867,7 +880,7 @@ export default function PracticeGameScreen() {
               >
                 <Text style={styles.rangeModeBtnText}>
                   {practiceEntireRange
-                    ? "One verse at a time"
+                    ? "Practice one verse at a time"
                     : `Speak the whole passage (${rangeVerses.length} verses)`}
                 </Text>
               </Pressable>
@@ -1046,6 +1059,7 @@ export default function PracticeGameScreen() {
             verse={verse}
             onResult={handleSpeechResult}
             onExit={exitPractice}
+            onRestart={resetToMemorize}
             colors={colors}
             autoStart={
               !isWelcomeDemo && voicePrefs.autoSubmitOnSilence && reciteListeningReady
@@ -1187,6 +1201,7 @@ function ReciteComposerWithSpeech({
   verse,
   onResult,
   onExit,
+  onRestart,
   colors,
   autoStart = false,
   smartMic = false,
@@ -1198,6 +1213,7 @@ function ReciteComposerWithSpeech({
   verse: GameVerse;
   onResult: (score: AccuracyResult, transcript: string, inputMode: "speech" | "type") => void;
   onExit?: () => void;
+  onRestart?: () => void;
   colors: ThemeColors;
   autoStart?: boolean;
   smartMic?: boolean;
@@ -1250,25 +1266,40 @@ function ReciteComposerWithSpeech({
     pulse();
   });
 
+  const stopListeningForBailOut = useCallback(() => {
+    submittedRef.current = true;
+    try {
+      ExpoSpeechRecognitionModule.stop();
+    } catch {
+      // ignore
+    }
+    setListening(false);
+  }, [ExpoSpeechRecognitionModule]);
+
+  const bailOutIfRestartPhrase = useCallback(
+    (spoken: string) => {
+      if (!onRestart || !isPracticeRestartPhrase(spoken)) return false;
+      stopListeningForBailOut();
+      onRestart();
+      return true;
+    },
+    [onRestart, stopListeningForBailOut]
+  );
+
   const bailOutIfExitPhrase = useCallback(
     (spoken: string) => {
       if (!onExit || !isPracticeExitPhrase(spoken)) return false;
-      submittedRef.current = true;
-      try {
-        ExpoSpeechRecognitionModule.stop();
-      } catch {
-        // ignore
-      }
-      setListening(false);
+      stopListeningForBailOut();
       onExit();
       return true;
     },
-    [onExit, ExpoSpeechRecognitionModule]
+    [onExit, stopListeningForBailOut]
   );
 
   const submitTranscript = useCallback(() => {
     if (submittedRef.current) return;
     const text = transcriptRef.current.trim();
+    if (bailOutIfRestartPhrase(text)) return;
     if (bailOutIfExitPhrase(text)) return;
     if (text.length < 2) return;
     submittedRef.current = true;
@@ -1281,7 +1312,7 @@ function ReciteComposerWithSpeech({
     setStatus("Checking…");
     const result = computeAccuracy(verse.text, text);
     onResult(result, text, "speech");
-  }, [verse.text, onResult, bailOutIfExitPhrase, ExpoSpeechRecognitionModule]);
+  }, [verse.text, onResult, bailOutIfRestartPhrase, bailOutIfExitPhrase, ExpoSpeechRecognitionModule]);
 
   useSpeechRecognitionEvent("end", () => {
     pulseActive.current = false;
@@ -1327,7 +1358,9 @@ function ReciteComposerWithSpeech({
         transcriptRef.current = (current + " " + text).trim();
       }
       setTranscript(transcriptRef.current);
-      if (bailOutIfExitPhrase(transcriptRef.current.trim())) return;
+      const spoken = transcriptRef.current.trim();
+      if (bailOutIfRestartPhrase(spoken)) return;
+      if (bailOutIfExitPhrase(spoken)) return;
     } else {
       setTranscript(current ? current + " " + text : text);
     }
@@ -1449,10 +1482,11 @@ function ReciteComposerWithSpeech({
 
   const handleSubmit = useCallback(() => {
     const text = (reviewMode ? editableTranscript : transcript).trim();
+    if (bailOutIfRestartPhrase(text)) return;
     if (bailOutIfExitPhrase(text)) return;
     const result = computeAccuracy(verse.text, text);
     onResult(result, text, "speech");
-  }, [verse, reviewMode, editableTranscript, transcript, onResult, bailOutIfExitPhrase]);
+  }, [verse, reviewMode, editableTranscript, transcript, onResult, bailOutIfRestartPhrase, bailOutIfExitPhrase]);
 
   const displayText = reviewMode ? editableTranscript : transcript;
   const onChangeComposerText = (t: string) => {

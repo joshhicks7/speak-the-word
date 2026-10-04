@@ -10,35 +10,204 @@ type BibleVerse = {
   text: string;
 };
 
-let database: SQLite.SQLiteDatabase | null = null;
+const BIBLE_DB_NAME = "bible.db";
 
-async function openSeededDatabase(): Promise<SQLite.SQLiteDatabase> {
-  let db = await SQLite.openDatabaseAsync("bible.db");
-  let existingCount = 0;
-  try {
-    existingCount = await getVerseCount(db);
-  } catch {
-    existingCount = 0;
-  }
-  if (existingCount === 0) {
+let rawDatabase: SQLite.SQLiteDatabase | null = null;
+let database: SQLite.SQLiteDatabase | null = null;
+let databaseOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+
+/** Reset cached handles after a failed init (e.g. first-launch race on Android). */
+export async function resetDatabaseClient(): Promise<void> {
+  const toClose = rawDatabase ?? database;
+  if (toClose) {
     try {
-      await SQLite.importDatabaseFromAssetAsync("bible.db", {
-        assetId: require("./bible-seed.db") as number,
-      });
-      db = await SQLite.openDatabaseAsync("bible.db");
+      await toClose.closeAsync();
+    } catch {
+      // ignore
+    }
+  }
+  rawDatabase = null;
+  database = null;
+  databaseOpenPromise = null;
+}
+
+async function isDatabaseEmpty(db: SQLite.SQLiteDatabase): Promise<boolean> {
+  try {
+    const row = await db.getFirstAsync<{ count: number }>("SELECT COUNT(*) as count FROM verses");
+    return (row?.count ?? 0) === 0;
+  } catch {
+    return true;
+  }
+}
+
+async function importSeedFromAsset(): Promise<void> {
+  await SQLite.importDatabaseFromAssetAsync(BIBLE_DB_NAME, {
+    assetId: require("./bible-seed.db") as number,
+    /** Required when a probe open already created an empty bible.db (Android skips import otherwise). */
+    forceOverwrite: true,
+  });
+}
+
+/** One connection at a time — a probe open + main open caused SQLITE_BUSY on Android. */
+async function openSeededDatabase(): Promise<SQLite.SQLiteDatabase> {
+  let raw = await SQLite.openDatabaseAsync(BIBLE_DB_NAME);
+  if (await isDatabaseEmpty(raw)) {
+    await raw.closeAsync();
+    try {
+      await importSeedFromAsset();
     } catch {
       // Asset missing, web, or copy unsupported — JSON populate is the fallback.
     }
+    raw = await SQLite.openDatabaseAsync(BIBLE_DB_NAME);
   }
-  return db;
+  return raw;
 }
 
 export const getDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
-  if (!database) {
-    database = await openSeededDatabase();
+  if (database) return database;
+  if (!databaseOpenPromise) {
+    databaseOpenPromise = openSeededDatabase()
+      .then(async (raw) => {
+        rawDatabase = raw;
+        await configureDatabasePragmas(raw);
+        database = createSerializedDatabase(raw);
+        return database;
+      })
+      .catch((err) => {
+        databaseOpenPromise = null;
+        rawDatabase = null;
+        database = null;
+        throw err;
+      });
   }
-  return database;
+  return databaseOpenPromise;
 };
+
+/** Serialize native SQLite work — concurrent runAsync/finalize causes "database is locked" on Android. */
+let dbOperationQueue: Promise<unknown> = Promise.resolve();
+let sqliteOpSerial = 0;
+
+function sqlLabel(source: string): string {
+  return source.replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
+/** Native errors only mention finalizeAsync — attach SQL + op name for debugging. */
+export function wrapSqliteError(op: string, sql: string | undefined, err: unknown): Error {
+  const detail = err instanceof Error ? err.message : String(err);
+  const prefix = sql ? `${op}: ${sqlLabel(sql)}` : op;
+  const wrapped = new Error(`SQLite failed [${prefix}]: ${detail}`);
+  (wrapped as Error & { cause?: unknown }).cause = err;
+  return wrapped;
+}
+
+function callerHint(): string | undefined {
+  if (!__DEV__) return undefined;
+  const stack = new Error().stack;
+  if (!stack) return undefined;
+  return stack
+    .split("\n")
+    .slice(3, 7)
+    .map((l) => l.trim())
+    .join(" <- ");
+}
+
+function runQueued<T>(op: string, sql: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const id = ++sqliteOpSerial;
+  const label = sql ? `${op} ${sqlLabel(sql)}` : op;
+  return runSerialized(async () => {
+    if (__DEV__) {
+      console.debug(`[sqlite #${id}] start ${label}`);
+    }
+    try {
+      return await fn();
+    } catch (err) {
+      const hint = callerHint();
+      const wrapped = wrapSqliteError(op, sql, err);
+      console.error(`[sqlite #${id}] FAIL ${label}`, hint ?? "", err);
+      throw wrapped;
+    } finally {
+      if (__DEV__) {
+        console.debug(`[sqlite #${id}] done ${label}`);
+      }
+    }
+  });
+}
+
+export function runSerialized<T>(operation: () => Promise<T>): Promise<T> {
+  const next = dbOperationQueue.then(operation, operation);
+  dbOperationQueue = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
+
+/** Multi-step work on the raw connection (transactions). Do not use the queued proxy inside `task`. */
+export function runExclusiveDb<T>(
+  task: (db: SQLite.SQLiteDatabase) => Promise<T>,
+  batchName?: string
+): Promise<T> {
+  const batchHint = callerHint();
+  const name = batchName ?? "exclusiveBatch";
+  return runSerialized(async () => {
+    await getDatabase();
+    if (!rawDatabase) throw new Error("Database not open");
+    const id = ++sqliteOpSerial;
+    if (__DEV__) {
+      console.debug(`[sqlite #${id}] start ${name}`, batchHint ?? "");
+    }
+    try {
+      const result = await task(rawDatabase);
+      if (__DEV__) {
+        console.debug(`[sqlite #${id}] done ${name}`);
+      }
+      return result;
+    } catch (err) {
+      const wrapped = wrapSqliteError(name, undefined, err);
+      console.error(`[sqlite #${id}] FAIL ${name}`, batchHint ?? "", err);
+      throw wrapped;
+    }
+  });
+}
+
+/** Every native statement goes through the queue; nested calls (transactions) run inline. */
+function createSerializedDatabase(raw: SQLite.SQLiteDatabase): SQLite.SQLiteDatabase {
+  return new Proxy(raw, {
+    get(target, prop) {
+      if (prop === "runAsync") {
+        return (source: string, params?: SQLite.SQLiteBindParams) =>
+          runQueued("runAsync", source, () => target.runAsync(source, params));
+      }
+      if (prop === "getFirstAsync") {
+        return <T>(source: string, params?: SQLite.SQLiteBindParams) =>
+          runQueued("getFirstAsync", source, () => target.getFirstAsync<T>(source, params));
+      }
+      if (prop === "getAllAsync") {
+        return <T>(source: string, params?: SQLite.SQLiteBindParams) =>
+          runQueued("getAllAsync", source, () => target.getAllAsync<T>(source, params));
+      }
+      if (prop === "execAsync") {
+        return (source: string) => runQueued("execAsync", source, () => target.execAsync(source));
+      }
+      if (prop === "closeAsync") {
+        return () => runQueued("closeAsync", undefined, () => target.closeAsync());
+      }
+      const value = Reflect.get(target, prop);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+async function configureDatabasePragmas(db: SQLite.SQLiteDatabase): Promise<void> {
+  try {
+    await db.execAsync(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA busy_timeout = 10000;
+    `);
+  } catch {
+    // Some platforms reject WAL; busy_timeout is best-effort.
+  }
+}
 
 export const setupDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
   const db = await getDatabase();

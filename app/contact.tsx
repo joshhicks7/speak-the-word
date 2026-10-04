@@ -15,7 +15,8 @@ import { useThemeColors, type ThemeColors } from "../constants/theme";
 
 const phoneDigits = "5013510651";
 const phoneDisplay = "(501) 351-0651";
-const messageBody = "I am interested in learning more about Jesus";
+const messageBody =
+  "Hi — I'm using Speak the Word and would like to connect. I'm interested in learning more about Jesus.";
 
 export default function ContactScreen() {
   const colors = useThemeColors();
@@ -52,24 +53,16 @@ export default function ContactScreen() {
         <View style={styles.heartWrap}>
           <Ionicons name="heart" size={22} color={colors.primary} />
         </View>
-        <Text style={styles.title}>You are welcome here</Text>
-        <Text style={styles.subtitle}>We're glad you're using Speak the Word.</Text>
+        <Text style={styles.title}>About</Text>
+        <Text style={styles.subtitle}>Know Jesus—not just a score.</Text>
       </View>
 
-      <Text style={styles.sectionLabel}>Why this app exists</Text>
       <View style={styles.card}>
-        <Text style={styles.body}>
-          Speak the Word helps you memorize Scripture by speaking it. The point isn't a score —
-          it's knowing God's Word well enough to live it and share it.
-        </Text>
-      </View>
-
-      <Text style={styles.sectionLabel}>Want to know Jesus?</Text>
-      <View style={styles.card}>
-        <Text style={styles.body}>
-          If you want to know Jesus, you are not alone. He loves you, and the Bible is how we
-          meet Him. If you'd like to talk with someone — about Jesus, Scripture, or finding a
-          church — we'd be glad to hear from you.
+        <Text style={styles.bullet}>• Hide God's Word in your heart by speaking it.</Text>
+        <Text style={styles.bullet}>• Grow in understanding and a relationship with Jesus.</Text>
+        <Text style={[styles.body, styles.reachOutLead]}>
+          Want to know Him better? Reach out—we can help with prayer, finding a church, or
+          understanding Scripture.
         </Text>
 
         <Pressable
@@ -142,14 +135,6 @@ function createStyles(colors: ThemeColors) {
       textAlign: "center",
       lineHeight: 22,
     },
-    sectionLabel: {
-      fontSize: 13,
-      fontWeight: "600",
-      color: colors.textMuted,
-      marginBottom: 10,
-      textTransform: "uppercase",
-      letterSpacing: 0.5,
-    },
     card: {
       backgroundColor: colors.surface,
       borderRadius: 16,
@@ -162,6 +147,15 @@ function createStyles(colors: ThemeColors) {
       fontSize: 16,
       color: colors.textSecondary,
       lineHeight: 24,
+    },
+    bullet: {
+      fontSize: 16,
+      color: colors.textSecondary,
+      lineHeight: 24,
+      marginBottom: 8,
+    },
+    reachOutLead: {
+      marginTop: 12,
     },
     primaryBtn: {
       marginTop: 20,

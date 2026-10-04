@@ -34,7 +34,7 @@ export default function OpenDeepLinkScreen() {
         return;
       }
       if (tab === "home") {
-        router.replace("/(tabs)");
+        router.replace("/");
         return;
       }
 
@@ -61,7 +61,7 @@ export default function OpenDeepLinkScreen() {
         }
       }
 
-      router.replace("/(tabs)");
+      router.replace("/");
     })();
   }, [params, router]);
 

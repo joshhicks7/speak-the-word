@@ -29,6 +29,8 @@ import {
   type StoredChallenge,
 } from "../../database/challenges";
 import { processHubVerseVoice } from "../../lib/hubVerseVoice";
+import { pickBestReferenceTranscript } from "../../lib/parseScriptureReference";
+import { navigateToNextIncompleteChallenge } from "../../lib/openNextChallenge";
 import { CommandMicListener } from "../../components/CommandMicListener";
 import { HubPendingVerseBanner } from "../../components/HubPendingVerseBanner";
 import { useAppVoice } from "../../context/AppVoiceProvider";
@@ -65,7 +67,7 @@ export default function PracticeScreen() {
   const [pendingPracticeVerseIds, setPendingPracticeVerseIds] = useState<string[] | null>(null);
   const [bibleBooks, setBibleBooks] = useState<BibleBook[]>([]);
   const hubIntroPending = useRef(true);
-  const { prefs, speak, stopSpeak, speechActive } = useAppVoice();
+  const { prefs, speak, stopSpeak, speechActive, setEnabled } = useAppVoice();
   const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
 
   useEffect(() => {
@@ -84,13 +86,20 @@ export default function PracticeScreen() {
           verseId: firstVerse.id,
           mode: "speech",
           ...(verseIds.length > 1
-            ? { verseIds: verseIds.join(","), currentIndex: "0" }
+            ? { verseIds: verseIds.join(","), currentIndex: "0", rangeMode: "entire" }
             : {}),
         },
       });
     },
     [router]
   );
+
+  const openNextChallenge = useCallback(async () => {
+    await navigateToNextIncompleteChallenge(router, {
+      speak,
+      reenableListen: () => setPracticeVoiceListen(true),
+    });
+  }, [router, speak]);
 
   const load = useCallback(async (options?: { silent?: boolean }) => {
     if (!options?.silent) setLoading(true);
@@ -241,6 +250,10 @@ export default function PracticeScreen() {
           if (row) await setChallengeKind(row.id, "custom");
           await load({ silent: true });
         },
+        onHandsFreeOff: async () => {
+          await setEnabled(false);
+        },
+        onOpenNextChallenge: openNextChallenge,
       });
     },
     [
@@ -251,7 +264,15 @@ export default function PracticeScreen() {
       speak,
       stopSpeak,
       load,
+      setEnabled,
+      openNextChallenge,
     ]
+  );
+
+  const pickReferenceTranscript = useCallback(
+    (primary: string, alternatives: string[]) =>
+      pickBestReferenceTranscript(primary, alternatives, bibleBooks),
+    [bibleBooks]
   );
 
   if (loading) {
@@ -267,6 +288,7 @@ export default function PracticeScreen() {
       <CommandMicListener
         active={handsFree && practiceVoiceListen && !speechActive}
         verseMenuPending={pendingVerse != null}
+        pickReferenceTranscript={pickReferenceTranscript}
         onTranscript={(t) => void handlePracticeVoice(t)}
       />
       <View style={[styles.header, { paddingTop: Math.max(insets.top, 16) }]}>

@@ -180,7 +180,10 @@ export default function SettingsScreen() {
             example="Home · Levels · My challenges · Settings"
             detail="Open a main screen or Settings."
           />
-          <VoiceCommandLine example="Hands-free off" detail="Switch to manual mode." />
+          <VoiceCommandLine
+            example="Hands-free off · Mic off · Microphone off"
+            detail="Switch to manual mode."
+          />
           <VoiceCommandLine
             example="Stop · Stop speaking"
             detail="When the command mic is on. While it is reading aloud, tap Stop on screen."
@@ -222,6 +225,7 @@ export default function SettingsScreen() {
             example="John 3 16 · Practice John 3 16"
             detail="Say a reference to practice. Tap a challenge card to open it."
           />
+          <VoiceCommandLine example="Next challenge" detail="Open the next incomplete challenge in your list." />
         </CollapsibleVoiceSection>
 
         <CollapsibleVoiceSection
@@ -234,8 +238,12 @@ export default function SettingsScreen() {
           <VoiceCommandLine example="Begin · Ready" detail="When asked to say begin before reciting." />
           <VoiceCommandLine example="Hint · Next word" detail="Memorize phase." />
           <VoiceCommandLine
-            example="Exit · Quit · Done"
-            detail="Leave during recite (short phrase only, not part of the verse)."
+            example="Exit · Back · Quit · Done"
+            detail="Leave practice (go back). During recite: short phrase only, not part of the verse."
+          />
+          <VoiceCommandLine
+            example="Restart · Start over"
+            detail="Return to the memorize screen from recite, memorize, or results."
           />
           <VoiceCommandLine
             example="Try again · Try more · Advance"

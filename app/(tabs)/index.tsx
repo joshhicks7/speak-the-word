@@ -25,6 +25,7 @@ import {
 } from "../../database/queries";
 import speechWrapper from "../../lib/speechRecognitionWrapper";
 import { processHubVerseVoice } from "../../lib/hubVerseVoice";
+import { pickBestReferenceTranscript } from "../../lib/parseScriptureReference";
 import { parseGlobalCommand } from "../../lib/voiceCommands";
 import { getTodayDate, getStoredVerseOfTheDay, setVerseOfTheDay } from "../../utils/verseOfTheDay";
 import type { GameVerse } from "../../types/verse";
@@ -150,6 +151,12 @@ export default function HomeScreen() {
       });
     },
     [bibleBooks, pendingVerse, pendingPracticeVerseIds, router, verse, speak, stopSpeak, setEnabled]
+  );
+
+  const pickReferenceTranscript = useCallback(
+    (primary: string, alternatives: string[]) =>
+      pickBestReferenceTranscript(primary, alternatives, bibleBooks),
+    [bibleBooks]
   );
 
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -329,6 +336,7 @@ export default function HomeScreen() {
       <CommandMicListener
         active={handsFree && homeVoiceListen && !speechActive}
         verseMenuPending={pendingVerse != null}
+        pickReferenceTranscript={pickReferenceTranscript}
         onTranscript={(t) => void handleHomeVoice(t)}
       />
     </ScrollView>

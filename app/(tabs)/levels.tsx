@@ -30,6 +30,7 @@ import {
 } from "../../lib/voiceCommands";
 import {
   looksLikeScriptureReferenceAttempt,
+  pickBestReferenceTranscript,
   utteranceContainsScriptureReference,
 } from "../../lib/parseScriptureReference";
 
@@ -161,6 +162,12 @@ export default function LevelsScreen() {
     [bibleBooks, pendingVerse, pendingPracticeVerseIds, nextVerse, openVerse, router, speak, stopSpeak, setEnabled]
   );
 
+  const pickReferenceTranscript = useCallback(
+    (primary: string, alternatives: string[]) =>
+      pickBestReferenceTranscript(primary, alternatives, bibleBooks),
+    [bibleBooks]
+  );
+
   if (loading) {
     return (
       <View style={[styles.centered, { backgroundColor: colors.background }]}>
@@ -187,6 +194,7 @@ export default function LevelsScreen() {
       <CommandMicListener
         active={handsFree && levelsVoiceListen && !speechActive}
         verseMenuPending={pendingVerse != null}
+        pickReferenceTranscript={pickReferenceTranscript}
         onTranscript={(t) => void handleLevelsVoice(t)}
       />
       {pendingVerse ? <HubPendingVerseBanner reference={pendingVerse.reference} /> : null}

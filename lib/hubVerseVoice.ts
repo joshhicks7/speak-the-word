@@ -14,7 +14,10 @@ import {
   utteranceRequestsDirectPractice,
   utteranceRequestsDirectRead,
 } from "./parseScriptureReference";
-import { upsertChallengeFromVerses } from "../database/challenges";
+import {
+  findChallengeContainingVerses,
+  upsertChallengeFromVerses,
+} from "../database/challenges";
 import { logVoiceHub } from "./voiceCommandLog";
 import {
   extractFindVerseQuery,
@@ -24,6 +27,7 @@ import {
   parseVerseMenuCommand,
   parseVoiceCommand,
 } from "./voiceCommands";
+import { navigateToNextIncompleteChallenge } from "./openNextChallenge";
 import { isSpeaking } from "./voiceFeedback";
 
 const CHAPTER_READ_VERSE_LIMIT = 8;
@@ -43,6 +47,8 @@ export type HubVerseVoiceDeps = {
   practiceAsChallenge?: boolean;
   onAddToChallenges?: (verse: GameVerse, verseIds?: string[]) => Promise<void>;
   onHandsFreeOff?: () => Promise<void>;
+  /** Opens the next challenge in list order (My Challenges voice). */
+  onOpenNextChallenge?: () => Promise<void>;
   /** Screen-specific commands (e.g. today's verse, levels next). Return true if handled. */
   handleBeforeFallback?: (text: string) => Promise<boolean>;
 };
@@ -132,7 +138,14 @@ async function pushPractice(
   const ids = verseIds && verseIds.length > 1 ? verseIds : undefined;
   let challengeId: string | undefined;
   if (asChallenge && versesForChallenge.length > 0) {
-    const row = await upsertChallengeFromVerses(versesForChallenge);
+    let row = await findChallengeContainingVerses(versesForChallenge);
+    if (!row) {
+      try {
+        row = await upsertChallengeFromVerses(versesForChallenge);
+      } catch (err) {
+        console.warn("[voice hub] challenge upsert failed; opening practice without challenge row", err);
+      }
+    }
     challengeId = row?.id;
   }
   router.push({
@@ -199,6 +212,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     practiceAsChallenge = true,
     onAddToChallenges,
     onHandsFreeOff,
+    onOpenNextChallenge,
     handleBeforeFallback,
   } = deps;
 
@@ -211,6 +225,22 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
 
   setListening(false);
   stopSpeak();
+
+  const globalEarly = parseGlobalCommand(text);
+  if (globalEarly === "nextChallenge") {
+    setPendingVerse(null);
+    setPendingPracticeVerseIds(null);
+    if (onOpenNextChallenge) {
+      await onOpenNextChallenge();
+      return;
+    }
+    const opened = await navigateToNextIncompleteChallenge(router, {
+      speak,
+      reenableListen: () => setListening(true),
+    });
+    if (!opened) setListening(true);
+    return;
+  }
 
   logVoiceHub("input", {
     fullPhrase: text,
@@ -336,7 +366,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
           spoken.verses[0]!.id,
           spoken.verses,
           ids,
-          undefined,
+          "entire",
           practiceAsChallenge
         );
       }

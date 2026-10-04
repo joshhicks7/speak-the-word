@@ -5,7 +5,7 @@ import { hasSeenWelcome } from "../utils/onboarding";
 
 export default function Index() {
   const [checked, setChecked] = useState(false);
-  const [seenWelcome, setSeenWelcome] = useState(true);
+  const [seenWelcome, setSeenWelcome] = useState(false);
 
   useEffect(() => {
     hasSeenWelcome().then((seen) => {

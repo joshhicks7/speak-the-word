@@ -4,7 +4,7 @@ import { View, Text, ActivityIndicator, StyleSheet, useColorScheme, StatusBar } 
 import { enableScreens } from "react-native-screens";
 import { getTheme } from "../constants/theme";
 import { AppVoiceProvider } from "../context/AppVoiceProvider";
-import { setupDatabase } from "../database/setup";
+import { resetDatabaseClient, setupDatabase } from "../database/setup";
 
 // Avoid "Cannot read property 'default' of undefined" in react-native-screens Animated ref (Fabric/React 19)
 enableScreens(false);
@@ -16,9 +16,26 @@ export default function RootLayout() {
   const colors = getTheme(colorScheme === "dark" ? "dark" : "light");
 
   useEffect(() => {
-    setupDatabase()
-      .then(() => setReady(true))
-      .catch((e) => setError(String(e)));
+    let cancelled = false;
+
+    const initDatabase = async (attempt: number): Promise<void> => {
+      try {
+        await setupDatabase();
+        if (!cancelled) setReady(true);
+      } catch (e) {
+        if (attempt < 2) {
+          await resetDatabaseClient();
+          await new Promise((r) => setTimeout(r, 350));
+          return initDatabase(attempt + 1);
+        }
+        if (!cancelled) setError(String(e));
+      }
+    };
+
+    void initDatabase(0);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   if (error) {

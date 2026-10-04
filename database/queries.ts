@@ -1,6 +1,6 @@
 import { GameVerse } from "../types/verse";
 import { buildFtsMatchQuery, normalizeSearchQuery } from "../lib/verseSearchNormalize";
-import { getDatabase, rowToGameVerse } from "./setup";
+import { getDatabase, rowToGameVerse, runExclusiveDb } from "./setup";
 import { addUserFavoriteIds, removeUserFavoriteIds } from "../utils/userFavorites";
 import { PRACTICE_ELIGIBLE_WHERE } from "./verseEligibility";
 
@@ -30,13 +30,15 @@ function makeUserActionId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export const recordUserAction = async ({
-  actionType,
-  verseId,
-  scorePercent,
-  metadata,
-}: RecordUserActionInput): Promise<void> => {
-  const db = await getDatabase();
+async function insertUserAction(
+  db: Awaited<ReturnType<typeof getDatabase>>,
+  {
+    actionType,
+    verseId,
+    scorePercent,
+    metadata,
+  }: RecordUserActionInput
+): Promise<void> {
   await db.runAsync(
     "INSERT INTO user_actions (id, action_type, verse_id, score_percent, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
     [
@@ -48,6 +50,21 @@ export const recordUserAction = async ({
       metadata ? JSON.stringify(metadata) : null,
     ]
   );
+}
+
+export const recordUserAction = async (input: RecordUserActionInput): Promise<void> => {
+  const db = await getDatabase();
+  await insertUserAction(db, input);
+};
+
+/** Many action rows in one native queue slot (avoids lock errors between back-to-back inserts). */
+export const recordUserActions = async (inputs: RecordUserActionInput[]): Promise<void> => {
+  if (inputs.length === 0) return;
+  await runExclusiveDb(async (db) => {
+    for (const input of inputs) {
+      await insertUserAction(db, input);
+    }
+  }, "recordUserActions");
 };
 
 export const getVerseById = async (id: string): Promise<GameVerse | null> => {
@@ -185,26 +202,25 @@ export const getLearningStats = async (): Promise<{
   mostLearnedBook: string | null;
   perfectCount: number;
 }> => {
-  const db = await getDatabase();
-  const [countResult, mostLearnedBook, perfectResult] = await Promise.all([
-    db.getFirstAsync<{ total: number; completed: number }>(
+  return runExclusiveDb(async (db) => {
+    const countResult = await db.getFirstAsync<{ total: number; completed: number }>(
       `SELECT COUNT(*) as total, SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) as completed FROM verses WHERE ${PRACTICE_ELIGIBLE_WHERE}`
-    ),
-    getMostPracticedBookName(db),
-    db.getFirstAsync<{ perfect: number }>(
+    );
+    const mostLearnedBook = await getMostPracticedBookName(db);
+    const perfectResult = await db.getFirstAsync<{ perfect: number }>(
       "SELECT COUNT(*) as perfect FROM verses WHERE completed_at IS NOT NULL AND completion_score = 100"
-    ),
-  ]);
-  const total = countResult?.total ?? 0;
-  const completed = countResult?.completed ?? 0;
-  const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
-  return {
-    totalVerses: total,
-    completed,
-    percent,
-    mostLearnedBook,
-    perfectCount: perfectResult?.perfect ?? 0,
-  };
+    );
+    const total = countResult?.total ?? 0;
+    const completed = countResult?.completed ?? 0;
+    const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+    return {
+      totalVerses: total,
+      completed,
+      percent,
+      mostLearnedBook,
+      perfectCount: perfectResult?.perfect ?? 0,
+    };
+  }, "getLearningStats");
 };
 
 /** Get distinct action dates (local YYYY-MM-DD) for actions that count toward streaks. */

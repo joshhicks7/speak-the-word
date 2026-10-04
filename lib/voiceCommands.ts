@@ -12,7 +12,9 @@ export type VoiceIntent =
   | "today"
   | "levels"
   | "challenges"
+  | "nextChallenge"
   | "handsFreeOff"
+  | "restart"
   | "addVerse"
   | "settings"
   | "read"
@@ -21,11 +23,23 @@ export type VoiceIntent =
   | "unknown";
 
 const GLOBAL: { intent: VoiceIntent; phrases: string[] }[] = [
-  { intent: "home", phrases: ["home", "go home", "done", "exit", "quit", "go back", "stop", "cancel"] },
+  { intent: "home", phrases: ["home", "go home", "done", "exit", "quit", "go back", "back", "stop", "cancel"] },
   { intent: "levels", phrases: ["levels", "go to levels"] },
+  { intent: "nextChallenge", phrases: ["next challenge", "open next challenge"] },
   { intent: "challenges", phrases: ["my challenges", "challenges"] },
   { intent: "today", phrases: ["today's verse", "verse of the day", "todays verse"] },
-  { intent: "handsFreeOff", phrases: ["hands free off", "hands-free off", "manual mode"] },
+  {
+    intent: "handsFreeOff",
+    phrases: [
+      "hands free off",
+      "hands-free off",
+      "manual mode",
+      "mic off",
+      "microphone off",
+      "turn off mic",
+      "turn off microphone",
+    ],
+  },
   { intent: "findVerse", phrases: ["find verse", "search for verse", "verse that says"] },
   { intent: "addVerse", phrases: ["add verse", "add a verse"] },
   { intent: "settings", phrases: ["settings", "open settings", "go to settings"] },
@@ -35,11 +49,12 @@ const PRACTICE: { intent: VoiceIntent; phrases: string[] }[] = [
   { intent: "begin", phrases: ["begin", "ready", "go", "start"] },
   { intent: "hint", phrases: ["hint", "help", "next word"] },
   { intent: "again", phrases: ["try again", "again", "retry"] },
+  { intent: "restart", phrases: ["restart", "start over"] },
   { intent: "tryMore", phrases: ["try more", "once more", "more"] },
-  { intent: "advance", phrases: ["advance", "next verse", "next", "continue"] },
+  { intent: "advance", phrases: ["advance", "next challenge", "next verse", "next", "continue"] },
   { intent: "repeat", phrases: ["repeat", "read again", "say that again"] },
   { intent: "practice", phrases: ["practice", "start practice", "play", "play it", "lets play", "let's play"] },
-  { intent: "home", phrases: ["home", "go home", "done", "exit", "quit", "go back", "stop", "cancel"] },
+  { intent: "home", phrases: ["home", "go home", "done", "exit", "quit", "go back", "back", "stop", "cancel"] },
 ];
 
 /** Short bail-out utterances while reciting (not substring matches inside a verse). */
@@ -50,20 +65,34 @@ const PRACTICE_EXIT_EXACT = [
   "cancel",
   "done",
   "go back",
+  "back",
   "go home",
   "home",
   "leave",
   "get out",
 ];
 
+const PRACTICE_RESTART_EXACT = ["restart", "start over", "start again"];
+
 export function isPracticeExitPhrase(text: string): boolean {
   const n = normalize(text);
   if (!n) return false;
+  if (isPracticeRestartPhrase(n)) return false;
   for (const phrase of PRACTICE_EXIT_EXACT) {
     if (n === phrase || n === `${phrase} please`) return true;
   }
   const words = n.split(" ").filter(Boolean);
   if (words.length <= 4 && parsePracticeCommand(n) === "home") return true;
+  return false;
+}
+
+export function isPracticeRestartPhrase(text: string): boolean {
+  const n = normalize(text);
+  if (!n) return false;
+  for (const phrase of PRACTICE_RESTART_EXACT) {
+    if (n === phrase || n === `${phrase} please`) return true;
+  }
+  if (parsePracticeCommand(n) === "restart") return true;
   return false;
 }
 
@@ -119,6 +148,7 @@ const RESULT_HOME_PHRASES = [
   "quit",
   "finish",
   "go back",
+  "back",
   "go home",
   "stop",
   "cancel",
@@ -136,8 +166,15 @@ export function parsePracticeResultCommand(text: string): VoiceIntent {
   if (/\bdone\b/.test(n) && !n.includes("try more")) return "home";
 
   if (n.includes("try again") || n === "again" || n === "retry") return "again";
+  if (n === "restart" || n.includes("start over")) return "restart";
   if (n.includes("try more") || n === "once more" || n === "more") return "tryMore";
-  if (n.includes("advance") || n.includes("next verse") || n === "next" || n === "continue") {
+  if (
+    n.includes("next challenge") ||
+    n.includes("advance") ||
+    n.includes("next verse") ||
+    n === "next" ||
+    n === "continue"
+  ) {
     return "advance";
   }
   if (n.includes("repeat") || n.includes("read again") || n.includes("say that again")) {
@@ -148,7 +185,15 @@ export function parsePracticeResultCommand(text: string): VoiceIntent {
 }
 
 export function parseGlobalCommand(text: string): VoiceIntent {
-  return matchIntent(text, GLOBAL);
+  const n = normalize(text);
+  if (n.includes("next challenge") || n.includes("open next challenge")) {
+    return "nextChallenge";
+  }
+  const intent = matchIntent(text, GLOBAL);
+  if (intent === "challenges" && n.includes("next")) {
+    return "nextChallenge";
+  }
+  return intent;
 }
 
 export function parsePracticeCommand(text: string): VoiceIntent {
