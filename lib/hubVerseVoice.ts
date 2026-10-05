@@ -8,6 +8,7 @@ import {
 import type { GameVerse } from "../types/verse";
 import {
   getSpokenReferenceTail,
+  isBarePartialReferenceTail,
   looksLikeScriptureReferenceAttempt,
   parseScriptureReference,
   resolveCompactScriptureNumber,
@@ -28,7 +29,12 @@ import {
   parseVoiceCommand,
 } from "./voiceCommands";
 import { navigateToNextIncompleteChallenge } from "./openNextChallenge";
-import { isSpeaking } from "./voiceFeedback";
+import { isSpeaking, waitForSpeechIdle } from "./voiceFeedback";
+
+async function reenableListening(setListening: (active: boolean) => void): Promise<void> {
+  await waitForSpeechIdle();
+  setListening(true);
+}
 
 const CHAPTER_READ_VERSE_LIMIT = 8;
 
@@ -219,7 +225,11 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
   if (parseInterruptSpeechCommand(text, { allowBareStop: isSpeaking() })) {
     setListening(false);
     stopSpeak();
-    setListening(true);
+    void reenableListening(setListening);
+    return;
+  }
+
+  if (isBarePartialReferenceTail(text)) {
     return;
   }
 
@@ -236,9 +246,9 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     }
     const opened = await navigateToNextIncompleteChallenge(router, {
       speak,
-      reenableListen: () => setListening(true),
+      reenableListen: () => void reenableListening(setListening),
     });
-    if (!opened) setListening(true);
+    if (!opened) void reenableListening(setListening);
     return;
   }
 
@@ -275,7 +285,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
       setPendingPracticeVerseIds(ids);
       await speakVerseMenuPrompt(first, resolved.label);
     }
-    setListening(true);
+    void reenableListening(setListening);
   };
 
   const versesFromIds = async (ids: string[]): Promise<GameVerse[]> => {
@@ -314,7 +324,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
           ? chapterLabelFromVerse(pendingVerse!, pendingPracticeVerseIds.length)
           : undefined
       );
-      setListening(true);
+      void reenableListening(setListening);
       return true;
     }
     if (menuIntent === "addToChallenges") {
@@ -332,7 +342,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
           ? chapterLabelFromVerse(pendingVerse!, pendingPracticeVerseIds.length)
           : undefined
       );
-      setListening(true);
+      void reenableListening(setListening);
       return true;
     }
     return false;
@@ -384,7 +394,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
         await speakChapterRead({ speak }, spoken);
         await speakVerseMenuPrompt(spoken.verses[0], spoken.label);
       }
-      setListening(true);
+      void reenableListening(setListening);
       return;
     }
     await beginScriptureVoiceMenu(spoken);
@@ -402,7 +412,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     if (routeGlobalNav(router, nav)) return;
 
     await speak("Say practice, read, or add. Or say a new reference, like John 3 16.");
-    setListening(true);
+    void reenableListening(setListening);
     return;
   }
 
@@ -419,7 +429,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
       await beginScriptureVoiceMenu({ kind: "verse", verse: results[0] });
     } else {
       await speak("No verse found.");
-      setListening(true);
+      void reenableListening(setListening);
     }
     return;
   }
@@ -434,5 +444,5 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
   } else {
     await speak("Say a verse reference, like Genesis 1 1 or Psalm 23.");
   }
-  setListening(true);
+  void reenableListening(setListening);
 }

@@ -71,3 +71,22 @@ export function stopSpeaking(): void {
 export function isSpeaking(): boolean {
   return isSpeechActive();
 }
+
+/** Wait until TTS finishes (includes AppVoiceProvider debounce so mic stays off). */
+export function waitForSpeechIdle(): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = () => {
+      setTimeout(resolve, 500);
+    };
+    if (!isSpeechActive()) {
+      finish();
+      return;
+    }
+    const unsub = subscribeSpeechActivity((active) => {
+      if (!active) {
+        unsub();
+        finish();
+      }
+    });
+  });
+}

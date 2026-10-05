@@ -1,8 +1,12 @@
 import React, { useCallback, useEffect, useRef } from "react";
 import { logVoiceCommand, logVoicePhrase } from "../lib/voiceCommandLog";
 import { ensureVoiceAudioMode } from "../lib/voiceCue";
-import { looksLikeScriptureReferenceAttempt } from "../lib/parseScriptureReference";
+import {
+  isBarePartialReferenceTail,
+  looksLikeScriptureReferenceAttempt,
+} from "../lib/parseScriptureReference";
 import { parseStrictVerseMenuCommand, parseVoiceCommand } from "../lib/voiceCommands";
+import { isSpeaking } from "../lib/voiceFeedback";
 import speechWrapper from "../lib/speechRecognitionWrapper";
 
 const COMMAND_CONTEXTUAL_STRINGS = [
@@ -59,6 +63,7 @@ function shouldAcceptCommandTranscript(
   isFinal: boolean,
   verseMenuPending: boolean
 ): boolean {
+  if (isBarePartialReferenceTail(text)) return false;
   if (isFinal) return true;
   if (looksLikeScriptureReferenceAttempt(text)) return true;
   if (verseMenuPending && parseStrictVerseMenuCommand(text) !== "unknown") return true;
@@ -98,9 +103,10 @@ function CommandMicListenerInner({
   const scheduleRestart = useCallback(
     (delayMs = 350) => {
       clearRestartTimer();
-      if (!activeRef.current) return;
+      if (!activeRef.current || isSpeaking()) return;
       restartTimerRef.current = setTimeout(() => {
         restartTimerRef.current = null;
+        if (!activeRef.current || isSpeaking()) return;
         void startListeningRef.current?.();
       }, delayMs);
     },
@@ -139,7 +145,7 @@ function CommandMicListenerInner({
   }, [ExpoSpeechRecognitionModule, clearRestartTimer]);
 
   useSpeechRecognitionEvent("result", (event: { results: { transcript: string }[]; isFinal?: boolean }) => {
-    if (!activeRef.current) return;
+    if (!activeRef.current || isSpeaking()) return;
     const alternatives = event.results.map((r) => r.transcript?.trim() ?? "").filter(Boolean);
     const last = event.results[event.results.length - 1];
     const primary = last?.transcript?.trim() ?? "";
@@ -166,6 +172,7 @@ function CommandMicListenerInner({
   });
 
   useSpeechRecognitionEvent("end", () => {
+    if (isSpeaking()) return;
     scheduleRestart();
   });
 

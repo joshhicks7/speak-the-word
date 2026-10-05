@@ -73,6 +73,7 @@ function bookAliases(bookName: string): string[] {
   if (lower === "psalms") set.add("psalm");
   if (lower === "john") {
     set.add("jon");
+    set.add("junn");
     set.add("jn");
     set.add("jhn");
   }
@@ -88,6 +89,7 @@ function bookAliases(bookName: string): string[] {
 /** STT / casual speech -> full book name before alias index lookup. */
 const BOOK_SPOKEN_NICKNAMES: Readonly<Record<string, string>> = {
   jon: "john",
+  junn: "john",
   jn: "john",
   jhn: "john",
   matt: "matthew",
@@ -112,6 +114,11 @@ const BOOK_SPOKEN_NICKNAMES: Readonly<Record<string, string>> = {
 function resolveBook(bookPart: string, books: BibleBook[]): number | null {
   let q = bookPart.replace(/\s+/g, " ").trim().toLowerCase();
   if (!q) return null;
+
+  q = q
+    .replace(/^(1st|first)\s+/, "1 ")
+    .replace(/^(2nd|second)\s+/, "2 ")
+    .replace(/^(3rd|third)\s+/, "3 ");
 
   const nick = BOOK_SPOKEN_NICKNAMES[q];
   if (nick) q = nick;
@@ -224,15 +231,43 @@ function parseBookChapterFromPrefix(
   return { book, chapter };
 }
 
+function tokenizeReferenceTail(spoken: string): string[] {
+  const tail = getSpokenReferenceTail(spoken);
+  if (!tail) return [];
+  return mergeNumberedBookTokens(expandGluedBookNumberTokens(tail.split(" ").filter(Boolean)));
+}
+
+/** Lone "1" / "1st" / "first" or book-only "1 corinthians" — reference still in progress. */
+export function isBarePartialReferenceTail(spoken: string): boolean {
+  const tokens = tokenizeReferenceTail(spoken);
+  if (tokens.length !== 1) return false;
+  const t = tokens[0]!.toLowerCase();
+  if (/^\d+$/.test(t)) return true;
+  if (isNumberedBookPrefix(t)) return true;
+  // mergeNumberedBookTokens glues "first" + "corinthians" → "1 corinthians" (no chapter yet).
+  if (/\s/.test(tokens[0]!)) return true;
+  return false;
+}
+
+function tailHasChapterOrVerseNumber(tail: string): boolean {
+  if (/\d/.test(tail)) return true;
+  const parts = tail.split(" ").filter(Boolean);
+  for (let i = 0; i < parts.length; i++) {
+    const n = tokenToInt(parts[i]!);
+    if (n != null && n >= 1) return true;
+  }
+  return false;
+}
+
 /**
  * True when the user likely said a reference but parsing failed (e.g. "practice jon 3").
  * Prevents generic "practice" from opening the first challenge / next level.
  */
 export function looksLikeScriptureReferenceAttempt(spoken: string): boolean {
+  if (isBarePartialReferenceTail(spoken)) return false;
   const tail = getSpokenReferenceTail(spoken);
   if (!tail) return false;
-  if (/\d/.test(tail)) return true;
-  return tail.split(" ").filter(Boolean).length >= 2;
+  return tailHasChapterOrVerseNumber(tail);
 }
 
 /**
@@ -244,18 +279,86 @@ export type ParseScriptureReferenceOptions = {
   defaultBook?: number;
 };
 
-/** "john316" → ["john", "316"] */
+function isNumberedBookPrefix(token: string): boolean {
+  const t = token.toLowerCase();
+  if (t === "1" || t === "2" || t === "3" || t === "1st" || t === "2nd" || t === "3rd") return true;
+  if (t === "first" || t === "second" || t === "third") return true;
+  const n = tokenToInt(token);
+  return n === 1 || n === 2 || n === 3;
+}
+
+/** "1st" / "first" → "1" for book lookup (matches DB "1 Timothy"). */
+function normalizeNumberedBookPrefixToken(token: string): string {
+  const t = token.toLowerCase();
+  if (t === "1" || t === "1st" || t === "first") return "1";
+  if (t === "2" || t === "2nd" || t === "second") return "2";
+  if (t === "3" || t === "3rd" || t === "third") return "3";
+  return token;
+}
+
+/** "1 timothy 3 16" → ["1 timothy", "3", "16"] so chapter/verse aren't eaten as the book name. */
+function mergeNumberedBookTokens(tokens: string[]): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const cur = tokens[i]!;
+    if (isNumberedBookPrefix(cur) && i + 1 < tokens.length && !/^\d+$/.test(tokens[i + 1]!)) {
+      out.push(`${normalizeNumberedBookPrefixToken(cur)} ${tokens[i + 1]!}`);
+      i += 2;
+    } else {
+      out.push(cur);
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/** "john316" → ["john", "316"]; "1timothy" → ["1", "timothy"] */
 function expandGluedBookNumberTokens(tokens: string[]): string[] {
   const out: string[] = [];
   for (const tok of tokens) {
     const m = tok.match(/^([a-z][a-z0-9']*)(\d+)$/i);
     if (m) {
       out.push(m[1], m[2]);
-    } else {
-      out.push(tok);
+      continue;
     }
+    const numberedBook = tok.match(/^([123])([a-z][a-z0-9']*)$/i);
+    if (numberedBook) {
+      out.push(numberedBook[1], numberedBook[2]);
+      continue;
+    }
+    const numberedBookOrd = tok.match(/^(\d+(?:st|nd|rd))([a-z][a-z0-9']*)$/i);
+    if (numberedBookOrd) {
+      out.push(numberedBookOrd[1], numberedBookOrd[2]);
+      continue;
+    }
+    out.push(tok);
   }
   return out;
+}
+
+/** e.g. "1st corinthians 1 1" (4 tokens) or "1 corinthians 1 1" (3 tokens). */
+function parseBookChapterVerseSuffix(
+  tokens: string[],
+  books: BibleBook[]
+): ParsedScriptureReference | null {
+  if (tokens.length < 3) return null;
+  const verse = tokenToInt(tokens[tokens.length - 1]!);
+  const chapter = tokenToInt(tokens[tokens.length - 2]!);
+  if (verse == null || chapter == null || chapter < 1 || verse < 1) return null;
+
+  if (tokens.length >= 4) {
+    const thirdFromEnd = tokenToInt(tokens[tokens.length - 3]!);
+    if (thirdFromEnd != null && thirdFromEnd >= 1) {
+      return null;
+    }
+  }
+
+  const bookTokens = mergeNumberedBookTokens(tokens.slice(0, -2));
+  const bookPart = bookTokens.join(" ");
+  const book = resolveBook(bookPart, books);
+  if (book == null) return null;
+  return { book, chapter, verse };
 }
 
 function splitCompactChapterVerseCandidates(digits: string): { chapter: number; verse: number }[] {
@@ -325,6 +428,9 @@ function parseReferenceTokens(
     }
   }
 
+  const bcv = parseBookChapterVerseSuffix(tokens, books);
+  if (bcv) return bcv;
+
   if (tokens.length >= 4) {
     const verseEnd = tokenToInt(tokens[tokens.length - 1]!);
     const verseStart = tokenToInt(tokens[tokens.length - 2]!);
@@ -337,20 +443,11 @@ function parseReferenceTokens(
       verseStart >= 1 &&
       verseEnd >= verseStart
     ) {
-      const bookPart = tokens.slice(0, -3).join(" ");
+      const bookPart = mergeNumberedBookTokens(tokens.slice(0, -3)).join(" ");
       const book = resolveBook(bookPart, books);
       if (book != null) {
         return { book, chapter, verse: verseStart, verseEnd };
       }
-    }
-  }
-
-  if (tokens.length === 3) {
-    const verse = tokenToInt(tokens[2]!);
-    const chapter = tokenToInt(tokens[1]!);
-    if (verse != null && chapter != null && chapter >= 1 && verse >= 1) {
-      const book = resolveBook(tokens[0]!, books);
-      if (book != null) return { book, chapter, verse };
     }
   }
 
@@ -398,7 +495,9 @@ export function parseScriptureReference(
   const t = getSpokenReferenceTail(spoken);
   if (!t) return null;
 
-  const tokens = expandGluedBookNumberTokens(t.split(" ").filter(Boolean));
+  const tokens = mergeNumberedBookTokens(
+    expandGluedBookNumberTokens(t.split(" ").filter(Boolean))
+  );
   return parseReferenceTokens(tokens, books, options?.defaultBook);
 }
 
