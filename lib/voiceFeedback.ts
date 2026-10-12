@@ -1,6 +1,18 @@
 import * as Speech from "expo-speech";
+import {
+  DEFAULT_TTS_RATE,
+  clearAutoVoiceCache,
+  resolveSpeakOptions,
+  type TtsPreferences,
+} from "./ttsVoice";
 
 let speaking = false;
+let ttsPrefs: TtsPreferences = { voiceId: null, rate: DEFAULT_TTS_RATE };
+
+export function setTtsPreferences(partial: Partial<TtsPreferences>): void {
+  if (partial.voiceId !== undefined) clearAutoVoiceCache();
+  ttsPrefs = { ...ttsPrefs, ...partial };
+}
 const queue: { text: string; resolve: () => void }[] = [];
 
 type SpeechActivityListener = (active: boolean) => void;
@@ -28,27 +40,30 @@ function drainQueue(): void {
   const next = queue.shift()!;
   speaking = true;
   notifySpeechActivity();
-  Speech.speak(next.text, {
-    language: "en-US",
-    onDone: () => {
-      speaking = false;
-      next.resolve();
-      notifySpeechActivity();
-      drainQueue();
-    },
-    onStopped: () => {
-      speaking = false;
-      next.resolve();
-      notifySpeechActivity();
-      drainQueue();
-    },
-    onError: () => {
-      speaking = false;
-      next.resolve();
-      notifySpeechActivity();
-      drainQueue();
-    },
-  });
+  void (async () => {
+    const voiceOpts = await resolveSpeakOptions(ttsPrefs);
+    Speech.speak(next.text, {
+      ...voiceOpts,
+      onDone: () => {
+        speaking = false;
+        next.resolve();
+        notifySpeechActivity();
+        drainQueue();
+      },
+      onStopped: () => {
+        speaking = false;
+        next.resolve();
+        notifySpeechActivity();
+        drainQueue();
+      },
+      onError: () => {
+        speaking = false;
+        next.resolve();
+        notifySpeechActivity();
+        drainQueue();
+      },
+    });
+  })();
 }
 
 export function speakText(text: string): Promise<void> {

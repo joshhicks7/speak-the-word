@@ -9,7 +9,7 @@ import React, {
   type ReactNode,
 } from "react";
 import { playReciteCue, ensureVoiceAudioMode } from "../lib/voiceCue";
-import { speakText, stopSpeaking, subscribeSpeechActivity } from "../lib/voiceFeedback";
+import { setTtsPreferences, speakText, stopSpeaking, subscribeSpeechActivity } from "../lib/voiceFeedback";
 import { SpeechStopBar } from "../components/SpeechStopBar";
 import {
   getHandsFreePreferences,
@@ -49,6 +49,8 @@ export function AppVoiceProvider({ children }: { children: ReactNode }) {
     readFullVerse: true,
     announceEachVerseWhenReading: false,
     speakScreenContext: true,
+    ttsVoiceId: null,
+    ttsSpeechRate: 0.92,
   });
 
   const refreshPrefs = useCallback(async () => {
@@ -60,6 +62,13 @@ export function AppVoiceProvider({ children }: { children: ReactNode }) {
     void refreshPrefs();
     void ensureVoiceAudioMode();
   }, [refreshPrefs]);
+
+  useEffect(() => {
+    setTtsPreferences({
+      voiceId: prefs.ttsVoiceId,
+      rate: prefs.ttsSpeechRate,
+    });
+  }, [prefs.ttsVoiceId, prefs.ttsSpeechRate]);
 
   useEffect(() => {
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
