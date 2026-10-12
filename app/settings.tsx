@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
 import {
   Alert,
@@ -13,6 +13,13 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColors, type ThemeColors } from "../constants/theme";
 import { useAppVoice } from "../context/AppVoiceProvider";
+import {
+  TTS_RATE_PRESETS,
+  englishVoicesForPicker,
+  labelForTtsRate,
+  labelForTtsVoice,
+  loadAvailableVoices,
+} from "../lib/ttsVoice";
 import speechWrapper from "../lib/speechRecognitionWrapper";
 import {
   hasSeenHandsFreeDisclaimer,
@@ -28,6 +35,34 @@ export default function SettingsScreen() {
   const { prefs, setEnabled, updatePrefs } = useAppVoice();
   const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
   const [openCommandSections, setOpenCommandSections] = useState<Record<string, boolean>>({});
+  const [ttsVoices, setTtsVoices] = useState<Awaited<ReturnType<typeof loadAvailableVoices>>>([]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadAvailableVoices().then(setTtsVoices);
+    }, [])
+  );
+
+  const ttsVoiceIds = useMemo(() => {
+    const english = englishVoicesForPicker(ttsVoices);
+    return [null as string | null, ...english.map((v) => v.identifier)];
+  }, [ttsVoices]);
+
+  const cycleTtsVoice = useCallback(() => {
+    const current = prefs.ttsVoiceId;
+    const idx = Math.max(
+      0,
+      ttsVoiceIds.findIndex((id) => (id ?? null) === (current ?? null))
+    );
+    const next = ttsVoiceIds[(idx + 1) % ttsVoiceIds.length] ?? null;
+    void updatePrefs({ ttsVoiceId: next });
+  }, [prefs.ttsVoiceId, ttsVoiceIds, updatePrefs]);
+
+  const cycleTtsRate = useCallback(() => {
+    const idx = TTS_RATE_PRESETS.findIndex((p) => Math.abs(p.rate - prefs.ttsSpeechRate) < 0.001);
+    const next = TTS_RATE_PRESETS[(idx + 1) % TTS_RATE_PRESETS.length];
+    void updatePrefs({ ttsSpeechRate: next.rate });
+  }, [prefs.ttsSpeechRate, updatePrefs]);
 
   const toggleCommandSection = useCallback((id: string) => {
     setOpenCommandSections((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -143,6 +178,25 @@ export default function SettingsScreen() {
             </Pressable>
           </>
         ) : null}
+      </View>
+
+      <Text style={[styles.sectionTitle, { marginTop: 28 }]}>Read-aloud voice</Text>
+      <Text style={styles.sectionHint}>
+        Scripture and prompts are read with your phone&apos;s text-to-speech. Automatic picks the best
+        Enhanced English voice installed on your device. On iPhone, download more natural voices under
+        Settings → Accessibility → Spoken Content → Voices.
+      </Text>
+      <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+        <Pressable style={styles.rowPressable} onPress={cycleTtsVoice}>
+          <Text style={styles.rowLabel}>Voice</Text>
+          <Text style={styles.rowValue} numberOfLines={2}>
+            {labelForTtsVoice(prefs.ttsVoiceId, ttsVoices)}
+          </Text>
+        </Pressable>
+        <Pressable style={styles.rowPressable} onPress={cycleTtsRate}>
+          <Text style={styles.rowLabel}>Speaking pace</Text>
+          <Text style={styles.rowValue}>{labelForTtsRate(prefs.ttsSpeechRate)}</Text>
+        </Pressable>
       </View>
 
       <Text style={[styles.sectionTitle, { marginTop: 28 }]}>Voice commands</Text>

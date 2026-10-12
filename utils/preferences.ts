@@ -11,6 +11,8 @@ const KEYS = {
   readFullVerse: "speak-read-full-verse",
   announceEachVerseWhenReading: "speak-announce-each-verse",
   speakScreenContext: "speak-screen-context",
+  ttsVoiceId: "speak-tts-voice-id",
+  ttsSpeechRate: "speak-tts-speech-rate",
 } as const;
 
 export type MicStartMode = "autoCue" | "startPhrase";
@@ -27,6 +29,9 @@ export type HandsFreePreferences = {
   /** When on, multi-verse read-aloud says each reference (23:1, 23:2…) before its text. */
   announceEachVerseWhenReading: boolean;
   speakScreenContext: boolean;
+  /** null = automatic enhanced voice. */
+  ttsVoiceId: string | null;
+  ttsSpeechRate: number;
 };
 
 const DEFAULTS: HandsFreePreferences = {
@@ -39,6 +44,8 @@ const DEFAULTS: HandsFreePreferences = {
   readFullVerse: true,
   announceEachVerseWhenReading: false,
   speakScreenContext: true,
+  ttsVoiceId: null,
+  ttsSpeechRate: 0.92,
 };
 
 export async function getHandsFreePreferences(): Promise<HandsFreePreferences> {
@@ -55,6 +62,8 @@ export async function getHandsFreePreferences(): Promise<HandsFreePreferences> {
       readFullVerse: map[KEYS.readFullVerse] !== "false",
       announceEachVerseWhenReading: map[KEYS.announceEachVerseWhenReading] === "true",
       speakScreenContext: map[KEYS.speakScreenContext] !== "false",
+      ttsVoiceId: map[KEYS.ttsVoiceId]?.trim() || null,
+      ttsSpeechRate: parseFloat(map[KEYS.ttsSpeechRate] ?? "") || DEFAULTS.ttsSpeechRate,
     };
   } catch {
     return { ...DEFAULTS };
@@ -100,6 +109,12 @@ export async function updateHandsFreePreferences(
   }
   if (partial.speakScreenContext != null) {
     pairs.push([KEYS.speakScreenContext, partial.speakScreenContext ? "true" : "false"]);
+  }
+  if (partial.ttsVoiceId !== undefined) {
+    pairs.push([KEYS.ttsVoiceId, partial.ttsVoiceId?.trim() ?? ""]);
+  }
+  if (partial.ttsSpeechRate != null) {
+    pairs.push([KEYS.ttsSpeechRate, String(partial.ttsSpeechRate)]);
   }
   if (pairs.length > 0) await AsyncStorage.multiSet(pairs);
 }
