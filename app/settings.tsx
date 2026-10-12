@@ -14,6 +14,11 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColors, type ThemeColors } from "../constants/theme";
 import { useAppVoice } from "../context/AppVoiceProvider";
 import {
+  applyAvailableUpdateIfAny,
+  getUpdateDiagnostics,
+  type UpdateDiagnostics,
+} from "../lib/appUpdates";
+import {
   TTS_RATE_PRESETS,
   englishVoicesForPicker,
   labelForTtsRate,
@@ -36,12 +41,27 @@ export default function SettingsScreen() {
   const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
   const [openCommandSections, setOpenCommandSections] = useState<Record<string, boolean>>({});
   const [ttsVoices, setTtsVoices] = useState<Awaited<ReturnType<typeof loadAvailableVoices>>>([]);
+  const [updateInfo, setUpdateInfo] = useState<UpdateDiagnostics>(() => getUpdateDiagnostics());
 
   useFocusEffect(
     useCallback(() => {
+      setUpdateInfo(getUpdateDiagnostics());
       void loadAvailableVoices().then(setTtsVoices);
     }, [])
   );
+
+  const checkForAppUpdate = useCallback(() => {
+    const before = getUpdateDiagnostics();
+    void applyAvailableUpdateIfAny().finally(() => {
+      setUpdateInfo(getUpdateDiagnostics());
+      if (!before.updatesEnabled) {
+        Alert.alert(
+          "App update",
+          "Over-the-air updates are off in this install. Submit a new production store build, then publish updates on Expo."
+        );
+      }
+    });
+  }, []);
 
   const ttsVoiceIds = useMemo(() => {
     const english = englishVoicesForPicker(ttsVoices);
@@ -318,6 +338,44 @@ export default function SettingsScreen() {
           <Text style={styles.rowLabel}>Replay welcome tour</Text>
           <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
         </Pressable>
+      </View>
+
+      <Text style={[styles.sectionTitle, { marginTop: 28 }]}>App update (diagnostics)</Text>
+      <Text style={styles.sectionHint}>
+        Over-the-air updates never appear in the App Store or Play Console. If Read-aloud voice is missing,
+        compare runtime and channel here with your publish on expo.dev.
+      </Text>
+      <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+        <Pressable style={styles.rowPressable} onPress={checkForAppUpdate}>
+          <Text style={styles.rowLabel}>Check for update now</Text>
+          <Ionicons name="refresh" size={20} color={colors.primary} />
+        </Pressable>
+        <View style={styles.row}>
+          <Text style={styles.rowLabel}>OTA enabled</Text>
+          <Text style={styles.rowValue}>{updateInfo.updatesEnabled ? "Yes" : "No"}</Text>
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.rowLabel}>Channel</Text>
+          <Text style={styles.rowValue}>{updateInfo.channel ?? "—"}</Text>
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.rowLabel}>Runtime</Text>
+          <Text style={styles.rowValue}>{updateInfo.runtimeVersion ?? "—"}</Text>
+        </View>
+        <View style={styles.row}>
+          <Text style={styles.rowLabel}>App version</Text>
+          <Text style={styles.rowValue}>{updateInfo.appVersion ?? "—"}</Text>
+        </View>
+        <View style={styles.row}>
+          <Text style={[styles.rowLabel, { flex: 1 }]}>Update ID</Text>
+          <Text style={[styles.rowValue, { flex: 1, textAlign: "right" }]} numberOfLines={2}>
+            {updateInfo.updateId?.slice(0, 8) ?? "embedded"}
+          </Text>
+        </View>
+        <View style={[styles.row, { borderBottomWidth: 0 }]}>
+          <Text style={styles.rowLabel}>Using embedded bundle</Text>
+          <Text style={styles.rowValue}>{updateInfo.embeddedLaunch ? "Yes" : "No"}</Text>
+        </View>
       </View>
     </ScrollView>
   );

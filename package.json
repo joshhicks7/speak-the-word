@@ -14,7 +14,7 @@
     "build:ios:production": "eas build --platform ios --profile production",
     "submit:android:production": "eas submit --platform android --profile production",
     "submit:ios:production": "eas submit --platform ios --profile production",
-    "update:production": "eas update --channel production --message \"Speak the Word OTA update\"",
+    "update:production": "eas build:version:sync && eas update --channel production --message \"Speak the Word OTA update\"",
     "update:preview": "eas update --channel preview --message \"Speak the Word preview OTA update\""
   },
   "dependencies": {

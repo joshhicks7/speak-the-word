@@ -4,6 +4,7 @@ import { View, Text, ActivityIndicator, StyleSheet, useColorScheme, StatusBar } 
 import { enableScreens } from "react-native-screens";
 import { getTheme } from "../constants/theme";
 import { AppVoiceProvider } from "../context/AppVoiceProvider";
+import { applyAvailableUpdateIfAny } from "../lib/appUpdates";
 import { resetDatabaseClient, setupDatabase } from "../database/setup";
 
 // Avoid "Cannot read property 'default' of undefined" in react-native-screens Animated ref (Fabric/React 19)
@@ -33,6 +34,7 @@ export default function RootLayout() {
     };
 
     void initDatabase(0);
+    void applyAvailableUpdateIfAny();
     return () => {
       cancelled = true;
     };
