@@ -7,6 +7,10 @@ import {
 } from "../lib/parseScriptureReference";
 import { parseStrictVerseMenuCommand, parseVoiceCommand } from "../lib/voiceCommands";
 import { isSpeaking } from "../lib/voiceFeedback";
+import {
+  retryDelayMsForSpeechError,
+  shouldRetrySpeechError,
+} from "../lib/speechMicRecovery";
 import speechWrapper from "../lib/speechRecognitionWrapper";
 
 const COMMAND_CONTEXTUAL_STRINGS = [
@@ -85,6 +89,9 @@ function CommandMicListenerInner({
   const pickReferenceTranscriptRef = useRef(pickReferenceTranscript);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastFiredRef = useRef("");
+  const listenAttemptRef = useRef(0);
+  const micUnavailableRef = useRef(false);
+  const lastErrorAtRef = useRef(0);
 
   activeRef.current = active;
   verseMenuPendingRef.current = verseMenuPending;
@@ -103,10 +110,10 @@ function CommandMicListenerInner({
   const scheduleRestart = useCallback(
     (delayMs = 350) => {
       clearRestartTimer();
-      if (!activeRef.current || isSpeaking()) return;
+      if (!activeRef.current || isSpeaking() || micUnavailableRef.current) return;
       restartTimerRef.current = setTimeout(() => {
         restartTimerRef.current = null;
-        if (!activeRef.current || isSpeaking()) return;
+        if (!activeRef.current || isSpeaking() || micUnavailableRef.current) return;
         void startListeningRef.current?.();
       }, delayMs);
     },
@@ -114,10 +121,15 @@ function CommandMicListenerInner({
   );
 
   const startListening = useCallback(async () => {
-    if (!activeRef.current) return;
+    if (!activeRef.current || micUnavailableRef.current) return;
     clearRestartTimer();
     try {
       await ensureVoiceAudioMode();
+      try {
+        ExpoSpeechRecognitionModule.stop();
+      } catch {
+        // ignore — ensure prior session is torn down before restart
+      }
       const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!perm.granted || !activeRef.current) return;
       ExpoSpeechRecognitionModule.start({
@@ -129,7 +141,13 @@ function CommandMicListenerInner({
         iosTaskHint: "confirmation",
       });
     } catch {
-      scheduleRestart(500);
+      const delay = retryDelayMsForSpeechError("unknown", listenAttemptRef.current);
+      if (delay == null) {
+        micUnavailableRef.current = true;
+        return;
+      }
+      listenAttemptRef.current += 1;
+      scheduleRestart(delay);
     }
   }, [ExpoSpeechRecognitionModule, clearRestartTimer, scheduleRestart]);
 
@@ -169,20 +187,32 @@ function CommandMicListenerInner({
       intent: parseVoiceCommand(text),
     });
     onTranscriptRef.current(text);
+    listenAttemptRef.current = 0;
+    micUnavailableRef.current = false;
   });
 
   useSpeechRecognitionEvent("end", () => {
     if (isSpeaking()) return;
+    if (Date.now() - lastErrorAtRef.current < 600) return;
     scheduleRestart();
   });
 
   useSpeechRecognitionEvent("nomatch", () => {
+    if (micUnavailableRef.current) return;
     scheduleRestart();
   });
 
   useSpeechRecognitionEvent("error", (event: { error: string }) => {
     if (event.error === "aborted" || event.error === "not-allowed") return;
-    scheduleRestart(event.error === "busy" ? 800 : 350);
+    lastErrorAtRef.current = Date.now();
+    const delay = retryDelayMsForSpeechError(event.error, listenAttemptRef.current);
+    if (delay == null || !shouldRetrySpeechError(event.error, listenAttemptRef.current)) {
+      micUnavailableRef.current = true;
+      clearRestartTimer();
+      return;
+    }
+    listenAttemptRef.current += 1;
+    scheduleRestart(delay);
   });
 
   useSpeechRecognitionEvent("start", () => {
@@ -192,8 +222,13 @@ function CommandMicListenerInner({
   useEffect(() => {
     if (!active) {
       stopListening();
+      listenAttemptRef.current = 0;
+      micUnavailableRef.current = false;
+      lastErrorAtRef.current = 0;
       return;
     }
+    listenAttemptRef.current = 0;
+    micUnavailableRef.current = false;
     void startListening();
     return () => stopListening();
   }, [active, startListening, stopListening]);

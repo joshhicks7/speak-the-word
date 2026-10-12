@@ -44,6 +44,10 @@ import {
 import { CoachBanner } from "../components/CoachBanner";
 import { CommandMicListener } from "../components/CommandMicListener";
 import { useAppVoice } from "../context/AppVoiceProvider";
+import {
+  retryDelayMsForSpeechError,
+  userMessageForSpeechError,
+} from "../lib/speechMicRecovery";
 import speechWrapper from "../lib/speechRecognitionWrapper";
 import { ensureVoiceAudioMode } from "../lib/voiceCue";
 import { isSpeaking } from "../lib/voiceFeedback";
@@ -1239,6 +1243,9 @@ function ReciteComposerWithSpeech({
   const submittedRef = useRef(false);
   const autoStarted = useRef(false);
   const listenRetryRef = useRef(0);
+  const lastErrorAtRef = useRef(0);
+  const speechErrorAlertShownRef = useRef(false);
+  const pendingReconnectRef = useRef(false);
 
   const speech = speechWrapper.module!;
   const { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } = speech;
@@ -1249,8 +1256,10 @@ function ReciteComposerWithSpeech({
   );
 
   useSpeechRecognitionEvent("start", () => {
-    listenRetryRef.current = 0;
-    transcriptRef.current = "";
+    if (!pendingReconnectRef.current) {
+      transcriptRef.current = "";
+    }
+    pendingReconnectRef.current = false;
     setReviewMode(false);
     setListening(true);
     setStatus("Listening — speak the Word");
@@ -1320,6 +1329,7 @@ function ReciteComposerWithSpeech({
     pulseAnim.setValue(1);
     setListening(false);
     if (smartMic) {
+      if (Date.now() - lastErrorAtRef.current < 600) return;
       submitTranscript();
       return;
     }
@@ -1371,23 +1381,25 @@ function ReciteComposerWithSpeech({
     pulseAnim.stopAnimation();
     pulseAnim.setValue(1);
     setListening(false);
+    lastErrorAtRef.current = Date.now();
     if (event.error === "aborted" || event.error === "no-speech") {
       setStatus("Ready");
       return;
     }
-    const recoverable =
-      smartMic && !submittedRef.current && listenRetryRef.current < 3;
+    const delay = retryDelayMsForSpeechError(event.error, listenRetryRef.current);
+    const recoverable = smartMic && !submittedRef.current && delay != null;
     if (recoverable) {
       listenRetryRef.current += 1;
       setStatus(isSpeaking() ? "Waiting…" : "Reconnecting…");
       setTimeout(() => {
-        if (!submittedRef.current) void handleStart();
-      }, isSpeaking() ? 500 : 650);
+        if (!submittedRef.current) void handleStart({ reconnect: true });
+      }, isSpeaking() ? 500 : delay);
       return;
     }
     setStatus("Tap mic to try again");
-    if (event.error !== "aborted") {
-      Alert.alert("Speech error", event.message ?? event.error);
+    if (event.error !== "aborted" && !speechErrorAlertShownRef.current) {
+      speechErrorAlertShownRef.current = true;
+      Alert.alert("Speech error", userMessageForSpeechError(event.error, event.message));
     }
   });
 
@@ -1400,27 +1412,38 @@ function ReciteComposerWithSpeech({
     return result.granted;
   }, []);
 
-  const handleStart = useCallback(async () => {
+  const handleStart = useCallback(async (opts?: { reconnect?: boolean }) => {
+    const reconnect = opts?.reconnect === true;
     if (permissionGranted === false) return;
     if (isSpeaking()) {
       setStatus("Waiting…");
       setTimeout(() => {
-        if (!submittedRef.current) void handleStart();
+        if (!submittedRef.current) void handleStart(opts);
       }, 400);
       return;
     }
     if (permissionGranted !== true && !(await requestPermissions())) return;
-    submittedRef.current = false;
-    hasFinalChunk.current = false;
-    listenStartedAt.current = Date.now();
-    lastFinalAt.current = Date.now();
-    setReviewMode(false);
-    setEditableTranscript("");
-    setTranscript("");
-    transcriptRef.current = "";
-    setStatus("Starting...");
+    if (!reconnect) {
+      listenRetryRef.current = 0;
+      speechErrorAlertShownRef.current = false;
+      submittedRef.current = false;
+      hasFinalChunk.current = false;
+      listenStartedAt.current = Date.now();
+      lastFinalAt.current = Date.now();
+      setReviewMode(false);
+      setEditableTranscript("");
+      setTranscript("");
+      transcriptRef.current = "";
+    }
+    pendingReconnectRef.current = reconnect;
+    setStatus(reconnect ? "Reconnecting…" : "Starting...");
     try {
       await ensureVoiceAudioMode();
+      try {
+        ExpoSpeechRecognitionModule.stop();
+      } catch {
+        // ignore — release mic before starting again
+      }
       ExpoSpeechRecognitionModule.start({
         lang: "en-US",
         interimResults: true,
@@ -1431,7 +1454,10 @@ function ReciteComposerWithSpeech({
     } catch (e) {
       setListening(false);
       setStatus("Tap mic to try again");
-      Alert.alert("Error", String(e));
+      if (!speechErrorAlertShownRef.current) {
+        speechErrorAlertShownRef.current = true;
+        Alert.alert("Error", String(e));
+      }
     }
   }, [permissionGranted, requestPermissions, ExpoSpeechRecognitionModule, contextualStrings]);
 
