@@ -69,7 +69,8 @@
       ],
       "expo-sqlite",
       "expo-router",
-      "expo-font"
+      "expo-font",
+      "expo-updates"
     ],
     "extra": {
       "router": {},
@@ -82,7 +83,9 @@
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/9250772c-fda5-4d89-9255-a79c13daefd5"
+      "url": "https://u.expo.dev/9250772c-fda5-4d89-9255-a79c13daefd5",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
     }
   }
 }
