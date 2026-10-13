@@ -122,6 +122,7 @@ export default function SettingsScreen() {
   );
 
   return (
+    <>
     <ScrollView
       style={styles.container}
       contentContainerStyle={[styles.content, { paddingTop: Math.max(insets.top, 8) }]}
@@ -208,9 +209,9 @@ export default function SettingsScreen() {
 
       <Text style={[styles.sectionTitle, { marginTop: 28 }]}>Read-aloud voice</Text>
       <Text style={styles.sectionHint}>
-        Scripture and prompts are read with your phone&apos;s text-to-speech. Automatic picks the best
-        Enhanced English voice installed on your device. On iPhone, download more natural voices under
-        Settings → Accessibility → Spoken Content → Voices.
+        Tap Voice or Speaking pace to open a list (▼). Scripture and prompts use your phone&apos;s
+        text-to-speech. On iPhone, download Enhanced voices under Settings → Accessibility → Spoken
+        Content → Voices.
       </Text>
       <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
         <Pressable
@@ -240,29 +241,6 @@ export default function SettingsScreen() {
           </View>
         </Pressable>
       </View>
-
-      <OptionPickerModal
-        visible={voicePickerOpen}
-        title="Read-aloud voice"
-        options={ttsVoiceOptions}
-        selectedValue={prefs.ttsVoiceId}
-        onSelect={(value) => void updatePrefs({ ttsVoiceId: value })}
-        onClose={() => setVoicePickerOpen(false)}
-      />
-      <OptionPickerModal
-        visible={ratePickerOpen}
-        title="Speaking pace"
-        options={ttsRateOptions}
-        selectedValue={
-          TTS_RATE_PRESETS.find((p) => Math.abs(p.rate - prefs.ttsSpeechRate) < 0.001)?.rate.toString() ??
-          String(prefs.ttsSpeechRate)
-        }
-        onSelect={(value) => {
-          const rate = value != null ? parseFloat(value) : DEFAULT_TTS_RATE;
-          if (!Number.isNaN(rate)) void updatePrefs({ ttsSpeechRate: rate });
-        }}
-        onClose={() => setRatePickerOpen(false)}
-      />
 
       <Text style={[styles.sectionTitle, { marginTop: 28 }]}>Voice commands</Text>
       <Text style={styles.sectionHint}>
@@ -423,6 +401,30 @@ export default function SettingsScreen() {
         </View>
       </View>
     </ScrollView>
+
+    <OptionPickerModal
+      visible={voicePickerOpen}
+      title="Read-aloud voice"
+      options={ttsVoiceOptions}
+      selectedValue={prefs.ttsVoiceId}
+      onSelect={(value) => void updatePrefs({ ttsVoiceId: value })}
+      onClose={() => setVoicePickerOpen(false)}
+    />
+    <OptionPickerModal
+      visible={ratePickerOpen}
+      title="Speaking pace"
+      options={ttsRateOptions}
+      selectedValue={
+        TTS_RATE_PRESETS.find((p) => Math.abs(p.rate - prefs.ttsSpeechRate) < 0.001)?.rate.toString() ??
+        String(prefs.ttsSpeechRate)
+      }
+      onSelect={(value) => {
+        const rate = value != null ? parseFloat(value) : DEFAULT_TTS_RATE;
+        if (!Number.isNaN(rate)) void updatePrefs({ ttsSpeechRate: rate });
+      }}
+      onClose={() => setRatePickerOpen(false)}
+    />
+    </>
   );
 }
 

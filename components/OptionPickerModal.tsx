@@ -36,10 +36,24 @@ export function OptionPickerModal({
   const colors = useThemeColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
 
+  if (!visible) return null;
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={[styles.card, { backgroundColor: colors.surface }]} onPress={() => {}}>
+    <Modal
+      visible
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
+      <View style={styles.backdrop}>
+        <Pressable
+          style={StyleSheet.absoluteFillObject}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close picker"
+        />
+        <View style={[styles.card, { backgroundColor: colors.surface }]}>
           <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
           <ScrollView style={styles.list} nestedScrollEnabled keyboardShouldPersistTaps="handled">
             {options.map((opt) => {
@@ -52,7 +66,11 @@ export function OptionPickerModal({
                   style={({ pressed }) => [
                     styles.row,
                     {
-                      backgroundColor: selected ? colors.primary + "18" : pressed ? colors.border + "40" : "transparent",
+                      backgroundColor: selected
+                        ? colors.primary + "18"
+                        : pressed
+                          ? colors.border + "40"
+                          : "transparent",
                     },
                   ]}
                   onPress={() => {
@@ -76,8 +94,8 @@ export function OptionPickerModal({
           <Pressable style={styles.cancel} onPress={onClose} accessibilityRole="button">
             <Text style={[styles.cancelText, { color: colors.textMuted }]}>Cancel</Text>
           </Pressable>
-        </Pressable>
-      </Pressable>
+        </View>
+      </View>
     </Modal>
   );
 }
@@ -97,6 +115,8 @@ function createStyles(_colors: ThemeColors) {
       maxHeight: "80%",
       borderRadius: 16,
       padding: 16,
+      zIndex: 2,
+      elevation: 8,
     },
     title: { fontSize: 18, fontWeight: "600", marginBottom: 12 },
     list: { maxHeight: 360, marginBottom: 8 },
