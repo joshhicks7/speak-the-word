@@ -13,11 +13,6 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColors, type ThemeColors } from "../constants/theme";
 import { useAppVoice } from "../context/AppVoiceProvider";
-import {
-  applyAvailableUpdateIfAny,
-  getUpdateDiagnostics,
-  type UpdateDiagnostics,
-} from "../lib/appUpdates";
 import { OptionPickerModal } from "../components/OptionPickerModal";
 import {
   DEFAULT_TTS_RATE,
