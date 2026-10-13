@@ -18,8 +18,11 @@ import {
   getUpdateDiagnostics,
   type UpdateDiagnostics,
 } from "../lib/appUpdates";
+import { OptionPickerModal } from "../components/OptionPickerModal";
 import {
+  DEFAULT_TTS_RATE,
   TTS_RATE_PRESETS,
+  displayLabelForVoice,
   englishVoicesForPicker,
   labelForTtsRate,
   labelForTtsVoice,
@@ -42,6 +45,8 @@ export default function SettingsScreen() {
   const [openCommandSections, setOpenCommandSections] = useState<Record<string, boolean>>({});
   const [ttsVoices, setTtsVoices] = useState<Awaited<ReturnType<typeof loadAvailableVoices>>>([]);
   const [updateInfo, setUpdateInfo] = useState<UpdateDiagnostics>(() => getUpdateDiagnostics());
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
+  const [ratePickerOpen, setRatePickerOpen] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -63,26 +68,27 @@ export default function SettingsScreen() {
     });
   }, []);
 
-  const ttsVoiceIds = useMemo(() => {
+  const ttsVoiceOptions = useMemo(() => {
     const english = englishVoicesForPicker(ttsVoices);
-    return [null as string | null, ...english.map((v) => v.identifier)];
+    return [
+      { value: null as string | null, label: "Automatic (best on device)" },
+      ...english.map((v) => ({
+        value: v.identifier,
+        label: displayLabelForVoice(v),
+        detail: v.language,
+      })),
+    ];
   }, [ttsVoices]);
 
-  const cycleTtsVoice = useCallback(() => {
-    const current = prefs.ttsVoiceId;
-    const idx = Math.max(
-      0,
-      ttsVoiceIds.findIndex((id) => (id ?? null) === (current ?? null))
-    );
-    const next = ttsVoiceIds[(idx + 1) % ttsVoiceIds.length] ?? null;
-    void updatePrefs({ ttsVoiceId: next });
-  }, [prefs.ttsVoiceId, ttsVoiceIds, updatePrefs]);
-
-  const cycleTtsRate = useCallback(() => {
-    const idx = TTS_RATE_PRESETS.findIndex((p) => Math.abs(p.rate - prefs.ttsSpeechRate) < 0.001);
-    const next = TTS_RATE_PRESETS[(idx + 1) % TTS_RATE_PRESETS.length];
-    void updatePrefs({ ttsSpeechRate: next.rate });
-  }, [prefs.ttsSpeechRate, updatePrefs]);
+  const ttsRateOptions = useMemo(
+    () =>
+      TTS_RATE_PRESETS.map((p) => ({
+        value: String(p.rate),
+        label: p.label,
+        detail: `${p.rate}×`,
+      })),
+    []
+  );
 
   const toggleCommandSection = useCallback((id: string) => {
     setOpenCommandSections((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -207,17 +213,56 @@ export default function SettingsScreen() {
         Settings → Accessibility → Spoken Content → Voices.
       </Text>
       <View style={[styles.card, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-        <Pressable style={styles.rowPressable} onPress={cycleTtsVoice}>
+        <Pressable
+          style={styles.rowPressable}
+          onPress={() => setVoicePickerOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Choose read-aloud voice"
+        >
           <Text style={styles.rowLabel}>Voice</Text>
-          <Text style={styles.rowValue} numberOfLines={2}>
-            {labelForTtsVoice(prefs.ttsVoiceId, ttsVoices)}
-          </Text>
+          <View style={styles.rowValueWithChevron}>
+            <Text style={[styles.rowValue, styles.rowValueFlex]} numberOfLines={2}>
+              {labelForTtsVoice(prefs.ttsVoiceId, ttsVoices)}
+            </Text>
+            <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
+          </View>
         </Pressable>
-        <Pressable style={styles.rowPressable} onPress={cycleTtsRate}>
+        <Pressable
+          style={styles.rowPressable}
+          onPress={() => setRatePickerOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Choose speaking pace"
+        >
           <Text style={styles.rowLabel}>Speaking pace</Text>
-          <Text style={styles.rowValue}>{labelForTtsRate(prefs.ttsSpeechRate)}</Text>
+          <View style={styles.rowValueWithChevron}>
+            <Text style={styles.rowValue}>{labelForTtsRate(prefs.ttsSpeechRate)}</Text>
+            <Ionicons name="chevron-down" size={18} color={colors.textMuted} />
+          </View>
         </Pressable>
       </View>
+
+      <OptionPickerModal
+        visible={voicePickerOpen}
+        title="Read-aloud voice"
+        options={ttsVoiceOptions}
+        selectedValue={prefs.ttsVoiceId}
+        onSelect={(value) => void updatePrefs({ ttsVoiceId: value })}
+        onClose={() => setVoicePickerOpen(false)}
+      />
+      <OptionPickerModal
+        visible={ratePickerOpen}
+        title="Speaking pace"
+        options={ttsRateOptions}
+        selectedValue={
+          TTS_RATE_PRESETS.find((p) => Math.abs(p.rate - prefs.ttsSpeechRate) < 0.001)?.rate.toString() ??
+          String(prefs.ttsSpeechRate)
+        }
+        onSelect={(value) => {
+          const rate = value != null ? parseFloat(value) : DEFAULT_TTS_RATE;
+          if (!Number.isNaN(rate)) void updatePrefs({ ttsSpeechRate: rate });
+        }}
+        onClose={() => setRatePickerOpen(false)}
+      />
 
       <Text style={[styles.sectionTitle, { marginTop: 28 }]}>Voice commands</Text>
       <Text style={styles.sectionHint}>
@@ -428,6 +473,13 @@ function createStyles(colors: ThemeColors) {
     },
     rowLabel: { fontSize: 16, color: colors.text, fontWeight: "500" },
     rowValue: { fontSize: 15, color: colors.textMuted },
+    rowValueFlex: { flexShrink: 1, textAlign: "right" },
+    rowValueWithChevron: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      maxWidth: "58%",
+    },
     commandSectionBody: {
       paddingHorizontal: 16,
       paddingBottom: 14,

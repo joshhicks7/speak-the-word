@@ -73,12 +73,30 @@ export async function resolveSpeakOptions(
   };
 }
 
+/** Human-readable label; Android often uses id-like names for both name and identifier. */
+export function displayLabelForVoice(v: Voice): string {
+  const raw = v.name?.trim() || v.identifier;
+  const looksLikeAndroidId =
+    raw.includes("-x-") || (raw === v.identifier && /^[a-z]{2}(-[a-z]{2})+/i.test(raw));
+  if (!looksLikeAndroidId && raw !== v.identifier) {
+    const enhanced = v.quality === VoiceQuality.Enhanced ? " · Enhanced" : "";
+    return `${raw}${enhanced}`;
+  }
+  if (!looksLikeAndroidId) {
+    const enhanced = v.quality === VoiceQuality.Enhanced ? " · Enhanced" : "";
+    return `${raw}${enhanced}`;
+  }
+  const lang = (v.language ?? "en").replace("-", " ");
+  const network = raw.includes("network") ? " · Network" : raw.includes("local") ? " · On-device" : "";
+  const enhanced = v.quality === VoiceQuality.Enhanced ? " · Enhanced" : "";
+  return `${lang}${network}${enhanced}`;
+}
+
 export function labelForTtsVoice(voiceId: string | null | undefined, voices: Voice[]): string {
   if (!voiceId?.trim()) return "Automatic (best on device)";
   const match = voices.find((v) => v.identifier === voiceId);
   if (!match) return "Automatic (best on device)";
-  const enhanced = match.quality === VoiceQuality.Enhanced ? " · Enhanced" : "";
-  return `${match.name}${enhanced}`;
+  return displayLabelForVoice(match);
 }
 
 export const TTS_RATE_PRESETS: { label: string; rate: number }[] = [
