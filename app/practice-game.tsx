@@ -1344,7 +1344,7 @@ function ReciteComposerWithSpeech({
     if (results.length === 0) return;
 
     let text = results[results.length - 1]?.transcript?.trim() ?? "";
-    if (event.isFinal && results.length > 1) {
+    if (results.length > 1) {
       let bestPercent = -1;
       for (const r of results) {
         const candidate = r.transcript?.trim() ?? "";

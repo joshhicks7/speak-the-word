@@ -5,7 +5,11 @@ import {
   isBarePartialReferenceTail,
   looksLikeScriptureReferenceAttempt,
 } from "../lib/parseScriptureReference";
-import { parseStrictVerseMenuCommand, parseVoiceCommand } from "../lib/voiceCommands";
+import {
+  pickBestVoiceCommandTranscript,
+  parseStrictVerseMenuCommand,
+  parseVoiceCommand,
+} from "../lib/voiceCommands";
 import { isSpeaking } from "../lib/voiceFeedback";
 import {
   retryDelayMsForSpeechError,
@@ -46,6 +50,7 @@ const COMMAND_CONTEXTUAL_STRINGS = [
   "next verse",
   "last verse",
   "last",
+  "blast",
   "previous verse",
   "stop speaking",
   "stop reading",
@@ -173,9 +178,10 @@ function CommandMicListenerInner({
     const primary = last?.transcript?.trim() ?? "";
     if (!primary) return;
 
+    const commandAwarePrimary = pickBestVoiceCommandTranscript(primary, alternatives);
     const text = pickReferenceTranscriptRef.current
-      ? pickReferenceTranscriptRef.current(primary, alternatives)
-      : primary;
+      ? pickReferenceTranscriptRef.current(commandAwarePrimary, alternatives)
+      : commandAwarePrimary;
 
     logVoicePhrase(text, {
       isFinal: event.isFinal ?? false,
