@@ -86,7 +86,7 @@ export const getVerseByBookChapterVerse = async (
   return result ? rowToGameVerse(result as Record<string, unknown>) : null;
 };
 
-/** Previous or next verse in canonical Bible order (may cross chapter or book). */
+/** Previous or next verse in canonical Bible order; wraps Genesis ↔ Revelation at the ends. */
 export const getAdjacentVerse = async (
   book: number,
   chapter: number,
@@ -95,6 +95,10 @@ export const getAdjacentVerse = async (
 ): Promise<GameVerse | null> => {
   const db = await getDatabase();
   const rowTo = (row: unknown) => rowToGameVerse(row as Record<string, unknown>);
+  const firstVerse = () =>
+    db.getFirstAsync("SELECT * FROM verses ORDER BY book ASC, chapter ASC, verse ASC LIMIT 1");
+  const lastVerse = () =>
+    db.getFirstAsync("SELECT * FROM verses ORDER BY book DESC, chapter DESC, verse DESC LIMIT 1");
 
   if (direction === "next") {
     let row = await db.getFirstAsync(
@@ -111,6 +115,8 @@ export const getAdjacentVerse = async (
       "SELECT * FROM verses WHERE book > ? ORDER BY book ASC, chapter ASC, verse ASC LIMIT 1",
       [book]
     );
+    if (row) return rowTo(row);
+    row = await firstVerse();
     return row ? rowTo(row) : null;
   }
 
@@ -128,6 +134,8 @@ export const getAdjacentVerse = async (
     "SELECT * FROM verses WHERE book < ? ORDER BY book DESC, chapter DESC, verse DESC LIMIT 1",
     [book]
   );
+  if (row) return rowTo(row);
+  row = await lastVerse();
   return row ? rowTo(row) : null;
 };
 
