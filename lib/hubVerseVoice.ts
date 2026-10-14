@@ -1,5 +1,6 @@
 import type { Router } from "expo-router";
 import {
+  getAdjacentVerse,
   getVerseByBookChapterVerse,
   getVersesByChapter,
   searchVersesByText,
@@ -25,6 +26,7 @@ import {
   parseGlobalCommand,
   parseInterruptSpeechCommand,
   parseStrictVerseMenuCommand,
+  parseVerseStepCommand,
   parseVerseMenuCommand,
   parseVoiceCommand,
 } from "./voiceCommands";
@@ -294,6 +296,27 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     return loaded.filter((v): v is GameVerse => v != null);
   };
 
+  const handleVerseStep = async (step: "next" | "previous"): Promise<boolean> => {
+    if (!pendingVerse) return false;
+    const adjacent = await getAdjacentVerse(
+      pendingVerse.book,
+      pendingVerse.chapter,
+      pendingVerse.verse,
+      step
+    );
+    if (!adjacent) {
+      await speak(step === "next" ? "There is no next verse." : "There is no previous verse.");
+      void reenableListening(setListening);
+      return true;
+    }
+    setPendingVerse(adjacent);
+    setPendingPracticeVerseIds([adjacent.id]);
+    await speak(`${adjacent.reference}. ${adjacent.text}`);
+    await speakVerseMenuPrompt(adjacent);
+    void reenableListening(setListening);
+    return true;
+  };
+
   const handlePendingVerseMenu = async (menuIntent: ReturnType<typeof parseVerseMenuCommand>): Promise<boolean> => {
     if (menuIntent === "practice") {
       const ids = pendingPracticeVerseIds?.length ? pendingPracticeVerseIds : [pendingVerse!.id];
@@ -349,6 +372,11 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
   };
 
   if (pendingVerse) {
+    const step = parseVerseStepCommand(text);
+    if (step) {
+      logVoiceHub("pending verse step", { step });
+      if (await handleVerseStep(step)) return;
+    }
     const strictMenu = parseStrictVerseMenuCommand(text);
     if (strictMenu !== "unknown") {
       logVoiceHub("pending menu (strict)", { menuIntent: strictMenu });
@@ -411,7 +439,9 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     const nav = parseVoiceCommand(text);
     if (routeGlobalNav(router, nav)) return;
 
-    await speak("Say practice, read, or add. Or say a new reference, like John 3 16.");
+    await speak(
+      "Say practice, read, or add. Say next or last for another verse. Or say a new reference, like John 3 16."
+    );
     void reenableListening(setListening);
     return;
   }

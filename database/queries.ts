@@ -86,6 +86,51 @@ export const getVerseByBookChapterVerse = async (
   return result ? rowToGameVerse(result as Record<string, unknown>) : null;
 };
 
+/** Previous or next verse in canonical Bible order (may cross chapter or book). */
+export const getAdjacentVerse = async (
+  book: number,
+  chapter: number,
+  verse: number,
+  direction: "next" | "previous"
+): Promise<GameVerse | null> => {
+  const db = await getDatabase();
+  const rowTo = (row: unknown) => rowToGameVerse(row as Record<string, unknown>);
+
+  if (direction === "next") {
+    let row = await db.getFirstAsync(
+      "SELECT * FROM verses WHERE book = ? AND chapter = ? AND verse > ? ORDER BY verse ASC LIMIT 1",
+      [book, chapter, verse]
+    );
+    if (row) return rowTo(row);
+    row = await db.getFirstAsync(
+      "SELECT * FROM verses WHERE book = ? AND chapter > ? ORDER BY chapter ASC, verse ASC LIMIT 1",
+      [book, chapter]
+    );
+    if (row) return rowTo(row);
+    row = await db.getFirstAsync(
+      "SELECT * FROM verses WHERE book > ? ORDER BY book ASC, chapter ASC, verse ASC LIMIT 1",
+      [book]
+    );
+    return row ? rowTo(row) : null;
+  }
+
+  let row = await db.getFirstAsync(
+    "SELECT * FROM verses WHERE book = ? AND chapter = ? AND verse < ? ORDER BY verse DESC LIMIT 1",
+    [book, chapter, verse]
+  );
+  if (row) return rowTo(row);
+  row = await db.getFirstAsync(
+    "SELECT * FROM verses WHERE book = ? AND chapter < ? ORDER BY chapter DESC, verse DESC LIMIT 1",
+    [book, chapter]
+  );
+  if (row) return rowTo(row);
+  row = await db.getFirstAsync(
+    "SELECT * FROM verses WHERE book < ? ORDER BY book DESC, chapter DESC, verse DESC LIMIT 1",
+    [book]
+  );
+  return row ? rowTo(row) : null;
+};
+
 export const getSortedVerses = async (): Promise<GameVerse[]> => {
   const db = await getDatabase();
   const result = await db.getAllAsync(
@@ -322,7 +367,7 @@ export const searchVersesByText = async (query: string, limit: number = 25): Pro
         `SELECT v.* FROM verses_fts AS f
          JOIN verses v ON v.id = f.id
          WHERE f MATCH ?
-         ORDER BY rank
+         ORDER BY v.book, v.chapter, v.verse
          LIMIT ?`,
         [ftsQuery, limit]
       );
@@ -336,7 +381,7 @@ export const searchVersesByText = async (query: string, limit: number = 25): Pro
 
   const like = `%${normalized.replace(/%/g, "")}%`;
   const likeRows = await db.getAllAsync(
-    `SELECT * FROM verses WHERE text LIKE ? ORDER BY length(text), book, chapter, verse LIMIT ?`,
+    `SELECT * FROM verses WHERE text LIKE ? ORDER BY book, chapter, verse LIMIT ?`,
     [like, limit]
   );
   return likeRows.map((r) => rowToGameVerse(r as Record<string, unknown>));
