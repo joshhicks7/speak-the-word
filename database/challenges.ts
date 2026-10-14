@@ -269,6 +269,9 @@ export async function findChallengeContainingVerses(verses: GameVerse[]): Promis
   });
   if (exact) return exact;
 
+  // One verse requested — do not attach a larger saved passage (e.g. Gen 1:1 vs Gen 1:1–31).
+  if (verses.length === 1) return null;
+
   const db = await getDatabase();
   const row = await db.getFirstAsync(
     `SELECT * FROM challenges

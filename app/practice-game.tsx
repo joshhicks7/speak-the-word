@@ -203,7 +203,17 @@ export default function PracticeGameScreen() {
       const row = await getChallengeById(challengeId);
       if (!row) return null;
       setChallengeRow(row);
-      return loadVersesForChallenge(row);
+      const all = await loadVersesForChallenge(row);
+      if (
+        all.length > 1 &&
+        verseId &&
+        rangeModeParam !== "entire" &&
+        !openedVerseByVerse
+      ) {
+        const only = all.find((v) => v.id === verseId);
+        if (only) return [only];
+      }
+      return all;
     };
 
     const applyRangeVerses = (valid: GameVerse[]) => {

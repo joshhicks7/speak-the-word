@@ -143,7 +143,7 @@ async function pushPractice(
   /** When false, practice as level progression (e.g. Levels tab). */
   asChallenge = true
 ): Promise<void> {
-  const ids = verseIds && verseIds.length > 1 ? verseIds : undefined;
+  const multiVerse = !!(verseIds && verseIds.length > 1);
   let challengeId: string | undefined;
   if (asChallenge && versesForChallenge.length > 0) {
     let row = await findChallengeContainingVerses(versesForChallenge);
@@ -162,7 +162,15 @@ async function pushPractice(
       verseId,
       mode: "speech",
       ...(asChallenge && challengeId ? { session: "challenge", challengeId } : { session: "level" }),
-      ...(ids ? { verseIds: ids.join(","), currentIndex: "0", rangeMode: rangeMode ?? "entire" } : {}),
+      ...(multiVerse
+        ? {
+            verseIds: verseIds!.join(","),
+            currentIndex: "0",
+            rangeMode: rangeMode ?? "entire",
+          }
+        : asChallenge
+          ? { verseIds: verseId, currentIndex: "0", rangeMode: "verse" }
+          : {}),
     },
   });
 }
