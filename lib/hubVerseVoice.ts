@@ -53,7 +53,6 @@ export type HubVerseVoiceDeps = {
   setListening: (active: boolean) => void;
   /** When false, voice practice uses level session (Levels tab). */
   practiceAsChallenge?: boolean;
-  onAddToChallenges?: (verse: GameVerse, verseIds?: string[]) => Promise<void>;
   onHandsFreeOff?: () => Promise<void>;
   /** Opens the next challenge in list order (My Challenges voice). */
   onOpenNextChallenge?: () => Promise<void>;
@@ -226,7 +225,6 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     stopSpeak,
     setListening,
     practiceAsChallenge = true,
-    onAddToChallenges,
     onHandsFreeOff,
     onOpenNextChallenge,
     handleBeforeFallback,
@@ -280,7 +278,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
 
   const speakVerseMenuPrompt = async (verse: GameVerse, chapterLabel?: string) => {
     const ref = chapterLabel ?? verse.reference;
-    await speak(`${ref}. What would you like to do? Practice, read, or add.`);
+    await speak(`${ref}. What would you like to do? Practice or read.`);
   };
 
   const beginScriptureVoiceMenu = async (resolved: ResolvedScripture) => {
@@ -326,7 +324,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
   };
 
   const handlePendingVerseMenu = async (menuIntent: ReturnType<typeof parseVerseMenuCommand>): Promise<boolean> => {
-    if (menuIntent === "practice") {
+    if (menuIntent === "practice" || menuIntent === "addToChallenges") {
       const ids = pendingPracticeVerseIds?.length ? pendingPracticeVerseIds : [pendingVerse!.id];
       clearPending();
       const verses = await versesFromIds(ids);
@@ -349,24 +347,6 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
       } else {
         await speak(`${pendingVerse!.reference}. ${pendingVerse!.text}`);
       }
-      await speakVerseMenuPrompt(
-        pendingVerse!,
-        pendingPracticeVerseIds && pendingPracticeVerseIds.length > 1
-          ? chapterLabelFromVerse(pendingVerse!, pendingPracticeVerseIds.length)
-          : undefined
-      );
-      void reenableListening(setListening);
-      return true;
-    }
-    if (menuIntent === "addToChallenges") {
-      if (onAddToChallenges) {
-        const ids =
-          pendingPracticeVerseIds && pendingPracticeVerseIds.length > 0
-            ? pendingPracticeVerseIds
-            : [pendingVerse!.id];
-        await onAddToChallenges(pendingVerse!, ids);
-      }
-      await speak("Added to My Challenges.");
       await speakVerseMenuPrompt(
         pendingVerse!,
         pendingPracticeVerseIds && pendingPracticeVerseIds.length > 1
@@ -448,7 +428,7 @@ export async function processHubVerseVoice(text: string, deps: HubVerseVoiceDeps
     if (routeGlobalNav(router, nav)) return;
 
     await speak(
-      "Say practice, read, or add. Say next or last for another verse. Or say a new reference, like John 3 16."
+      "Say practice or read. Say next or last for another verse. Or say a new reference, like John 3 16."
     );
     void reenableListening(setListening);
     return;

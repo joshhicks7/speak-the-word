@@ -410,7 +410,9 @@ export async function loadVersesForChallenge(challenge: ChallengeRow): Promise<G
 }
 
 export type ChallengeListOptions = {
-  /** When true, only custom + anything with a last attempt (hides untouched defaults). */
+  /** When false, include challenges that were never practiced (default: practiced only). */
+  practicedOnly?: boolean;
+  /** When true, only custom + anything with a last attempt (only if practicedOnly is false). */
   hideUntouchedDefaults?: boolean;
 };
 
@@ -430,8 +432,11 @@ const CHALLENGE_NAVIGATION_ORDER =
 
 export async function listChallenges(options?: ChallengeListOptions): Promise<ChallengeRow[]> {
   const db = await getDatabase();
+  const practicedOnly = options?.practicedOnly !== false;
   let sql = "SELECT * FROM challenges";
-  if (options?.hideUntouchedDefaults) {
+  if (practicedOnly) {
+    sql += " WHERE last_attempted_at IS NOT NULL";
+  } else if (options?.hideUntouchedDefaults) {
     sql += " WHERE kind = 'custom' OR last_attempted_at IS NOT NULL";
   }
   sql += " ORDER BY (last_attempted_at IS NULL), last_attempted_at DESC, created_at DESC";
@@ -485,7 +490,11 @@ export function isChallengeCompleted(row: Pick<ChallengeRow, "bestEver">): boole
 }
 
 export function isStoredChallengeSaved(stored: StoredChallenge): boolean {
-  return stored.kind === "custom";
+  return stored.lastAttemptedAt != null;
+}
+
+export function isChallengeInMyList(row: Pick<ChallengeRow, "lastAttemptedAt">): boolean {
+  return row.lastAttemptedAt != null;
 }
 
 /**
@@ -496,7 +505,9 @@ export async function getNextIncompleteChallenge(
   anchorChallengeId?: string | null
 ): Promise<ChallengeRow | null> {
   return runExclusiveDb(async (db) => {
-    const navRows = await db.getAllAsync(`SELECT * FROM challenges ORDER BY ${CHALLENGE_NAVIGATION_ORDER}`);
+    const navRows = await db.getAllAsync(
+      `SELECT * FROM challenges WHERE last_attempted_at IS NOT NULL ORDER BY ${CHALLENGE_NAVIGATION_ORDER}`
+    );
     const list = navRows.map((r) => rowToChallenge(r as Record<string, unknown>));
     if (list.length === 0) return null;
 

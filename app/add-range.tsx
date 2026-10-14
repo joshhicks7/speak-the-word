@@ -18,9 +18,9 @@ import {
   getChaptersForBook,
   getVersesByChapter,
   getVersesInRange,
-  setRangeFavorites,
   type BibleBook,
 } from "../database/queries";
+import { upsertChallengeFromVerses } from "../database/challenges";
 import type { GameVerse } from "../types/verse";
 import type { VersePosition } from "../database/queries";
 
@@ -149,17 +149,34 @@ export default function AddRangeScreen() {
     setModal(null);
   }, [pickerTarget, start, end]);
 
-  const handleAddRange = useCallback(async () => {
+  const handlePracticeRange = useCallback(async () => {
     if (!positionLessOrEqual(start, end)) {
       Alert.alert("Choose a starting verse first", "The first verse needs to come before the last.");
       return;
     }
     setSaving(true);
     try {
-      await setRangeFavorites(start, end, true);
-      Alert.alert("Added", "This passage is in My Challenges.", [{ text: "OK", onPress: () => router.back() }]);
+      const rangeVerses = await getVersesInRange(start, end);
+      if (rangeVerses.length === 0) {
+        Alert.alert("No verses in range", "Pick a valid first and last verse.");
+        return;
+      }
+      const first = rangeVerses[0]!;
+      const row = await upsertChallengeFromVerses(rangeVerses);
+      router.push({
+        pathname: "/practice-game",
+        params: {
+          session: "challenge",
+          ...(row ? { challengeId: row.id } : {}),
+          verseId: first.id,
+          mode: "speech",
+          verseIds: rangeVerses.map((v) => v.id).join(","),
+          currentIndex: "0",
+          rangeMode: "entire",
+        },
+      });
     } catch {
-      Alert.alert("Couldn't add that passage", "Please try again.");
+      Alert.alert("Couldn't open practice", "Please try again.");
     } finally {
       setSaving(false);
     }
@@ -222,7 +239,7 @@ export default function AddRangeScreen() {
       <View style={styles.ctaSection}>
         <TouchableOpacity
           style={[styles.addBtn, saving && styles.addBtnDisabled]}
-          onPress={handleAddRange}
+          onPress={() => void handlePracticeRange()}
           disabled={saving}
         >
           {saving ? (
@@ -230,7 +247,7 @@ export default function AddRangeScreen() {
           ) : (
             <>
               <Ionicons name="add-circle" size={22} color={colors.primaryText} />
-              <Text style={styles.addBtnText}>Add this passage</Text>
+              <Text style={styles.addBtnText}>Practice this passage</Text>
             </>
           )}
         </TouchableOpacity>
