@@ -243,6 +243,24 @@ export function parseVerseMenuCommand(text: string): VoiceIntent {
 }
 
 /** Exact menu phrases only (e.g. "read") — avoids "read john 3 16" matching via substring. */
+/** After a verse is loaded (e.g. read aloud), step to adjacent verse. */
+export function parseVerseStepCommand(text: string): "next" | "previous" | null {
+  const n = normalize(text);
+  if (!n) return null;
+  if (n === "next" || n === "next verse" || n === "next please") return "next";
+  if (
+    n === "last" ||
+    n === "last verse" ||
+    n === "previous" ||
+    n === "previous verse" ||
+    n === "prior" ||
+    n === "prior verse"
+  ) {
+    return "previous";
+  }
+  return null;
+}
+
 export function parseStrictVerseMenuCommand(text: string): VoiceIntent {
   const n = normalize(text);
   if (!n) return "unknown";
