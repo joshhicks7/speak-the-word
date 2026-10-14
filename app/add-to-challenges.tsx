@@ -337,6 +337,9 @@ export default function AddToChallengesScreen() {
           session: "challenge",
           ...(row ? { challengeId: row.id } : {}),
           verseId: v.id,
+          verseIds: v.id,
+          currentIndex: "0",
+          rangeMode: "verse",
           mode: "speech",
         },
       });
