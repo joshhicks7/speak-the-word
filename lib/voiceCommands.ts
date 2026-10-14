@@ -251,6 +251,7 @@ export function parseVerseStepCommand(text: string): "next" | "previous" | null 
   if (
     n === "last" ||
     n === "last verse" ||
+    n === "blast" ||
     n === "previous" ||
     n === "previous verse" ||
     n === "prior" ||
@@ -259,6 +260,29 @@ export function parseVerseStepCommand(text: string): "next" | "previous" | null 
     return "previous";
   }
   return null;
+}
+
+/** Prefer an STT alternative that matches a hands-free command (e.g. last vs blast). */
+export function pickBestVoiceCommandTranscript(primary: string, alternatives: string[]): string {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  for (const raw of [primary, ...alternatives]) {
+    const t = raw?.trim();
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    candidates.push(t);
+  }
+  const matchesCommand = (t: string) =>
+    parseVerseStepCommand(t) != null ||
+    parseStrictVerseMenuCommand(t) !== "unknown" ||
+    parseInterruptSpeechCommand(t) ||
+    parseGlobalCommand(t) !== "unknown" ||
+    parseVoiceCommand(t) !== "unknown";
+
+  for (const c of candidates) {
+    if (matchesCommand(c)) return c;
+  }
+  return primary.trim() || primary;
 }
 
 export function parseStrictVerseMenuCommand(text: string): VoiceIntent {

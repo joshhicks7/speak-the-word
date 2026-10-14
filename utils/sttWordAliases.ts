@@ -12,6 +12,8 @@ export const STT_WORD_GROUPS: readonly (readonly string[])[] = [
   ["saith", "says"],
   ["spake", "spoke"],
   ["verily", "verbally"],
+  /** STT often returns "blast" when the user says "last". */
+  ["last", "blast"],
 ];
 
 function buildSttWordAliasIndex(groups: readonly (readonly string[])[]): Readonly<Record<string, string>> {
