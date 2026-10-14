@@ -251,7 +251,7 @@ export default function SettingsScreen() {
           <VoiceCommandLine example="Practice · Read · Add" detail="After a reference is loaded." />
           <VoiceCommandLine
             example="Next · Last"
-            detail="After read or load a verse, hear the next or previous verse in order."
+            detail="After read or load a verse, step forward or back in Bible order (wraps Genesis ↔ Revelation)."
           />
           <VoiceCommandLine
             example="Find verse …"
