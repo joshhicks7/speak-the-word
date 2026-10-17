@@ -20,15 +20,15 @@ import {
   getChaptersForBook,
   getVersesByChapter,
   getVerseById,
+  getVersesInRange,
   type BibleBook,
   type VersePosition,
   searchVersesByText,
 } from "../database/queries";
 import type { GameVerse } from "../types/verse";
 import {
-  deleteChallenge,
   findChallengeByBounds,
-  saveChallengeAsCustom,
+  isChallengeInMyList,
   upsertChallengeFromVerses,
 } from "../database/challenges";
 
@@ -193,7 +193,7 @@ export default function AddToChallengesScreen() {
           endChapter: v.chapter,
           endVerse: v.verse,
         });
-        if (existing?.kind === "custom") saved.add(v.id);
+        if (existing && isChallengeInMyList(existing)) saved.add(v.id);
       })
     );
     setSavedChallengeVerseIds(saved);
@@ -212,71 +212,56 @@ export default function AddToChallengesScreen() {
     void refreshSavedVersesInChapter(verses);
   }, [verses, refreshSavedVersesInChapter]);
 
-  const onToggleVerse = useCallback(async (id: string) => {
-    const v = await getVerseById(id);
-    if (!v) return;
-    const bounds = {
-      startBook: v.book,
-      startChapter: v.chapter,
-      startVerse: v.verse,
-      endBook: v.book,
-      endChapter: v.chapter,
-      endVerse: v.verse,
-    };
-    const existing = await findChallengeByBounds(bounds);
-    if (existing?.kind === "custom") {
-      await deleteChallenge(existing.id);
-    } else {
-      await saveChallengeAsCustom(bounds);
-    }
-    if (selectedBook !== null && selectedChapter !== null) {
-      const updated = await getVersesByChapter(selectedBook.book, selectedChapter);
-      setVerses(updated);
-      await refreshSavedVersesInChapter(updated);
-    }
-  }, [selectedBook, selectedChapter, refreshSavedVersesInChapter]);
+  const openPracticeForVerses = useCallback(
+    async (practiceVerses: GameVerse[], rangeMode: "entire" | "verse" = "entire") => {
+      if (practiceVerses.length === 0) return;
+      const first = practiceVerses[0]!;
+      const row = await upsertChallengeFromVerses(practiceVerses);
+      router.push({
+        pathname: "/practice-game",
+        params: {
+          session: "challenge",
+          ...(row ? { challengeId: row.id } : {}),
+          verseId: first.id,
+          mode: "speech",
+          ...(practiceVerses.length > 1
+            ? {
+                verseIds: practiceVerses.map((v) => v.id).join(","),
+                currentIndex: "0",
+                rangeMode,
+              }
+            : { verseIds: first.id, currentIndex: "0", rangeMode: "verse" }),
+        },
+      });
+    },
+    [router]
+  );
 
-  const onAddEntireChapter = useCallback(async () => {
+  const onPracticeEntireChapter = useCallback(async () => {
     if (selectedBook === null || selectedChapter === null) return;
     const chapterVerses = await getVersesByChapter(selectedBook.book, selectedChapter);
     if (chapterVerses.length === 0) return;
-    const first = chapterVerses[0]!;
-    const last = chapterVerses[chapterVerses.length - 1]!;
-    await saveChallengeAsCustom({
-      startBook: first.book,
-      startChapter: first.chapter,
-      startVerse: first.verse,
-      endBook: last.book,
-      endChapter: last.chapter,
-      endVerse: last.verse,
-    });
-    setVerses(chapterVerses);
-  }, [selectedBook, selectedChapter]);
+    await openPracticeForVerses(chapterVerses, "entire");
+  }, [selectedBook, selectedChapter, openPracticeForVerses]);
 
-  const onAddRange = useCallback(async () => {
+  const onPracticeRange = useCallback(async () => {
     if (!rangeStart || !rangeEnd) return;
     const { start, end } = orderedRange(rangeStart, rangeEnd);
     setSavingRange(true);
     try {
-      await saveChallengeAsCustom({
-        startBook: start.book,
-        startChapter: start.chapter,
-        startVerse: start.verse,
-        endBook: end.book,
-        endChapter: end.chapter,
-        endVerse: end.verse,
-      });
-      if (selectedBook !== null && selectedChapter !== null) {
-        const updated = await getVersesByChapter(selectedBook.book, selectedChapter);
-        setVerses(updated);
+      const rangeVerses = await getVersesInRange(start, end);
+      if (rangeVerses.length === 0) {
+        Alert.alert("No verses in range", "Pick a valid first and last verse.");
+        return;
       }
+      await openPracticeForVerses(rangeVerses, "entire");
       clearRange();
     } catch {
-      Alert.alert("Couldn't add that passage", "Please try again.");
+      Alert.alert("Couldn't open practice", "Please try again.");
     } finally {
       setSavingRange(false);
     }
-  }, [rangeStart, rangeEnd, selectedBook, selectedChapter, clearRange]);
+  }, [rangeStart, rangeEnd, clearRange, openPracticeForVerses]);
 
   const onPickRangeVerse = useCallback((v: GameVerse) => {
     const pos = toPos(v);
@@ -330,21 +315,9 @@ export default function AddToChallengesScreen() {
 
   const openPracticeForVerse = useCallback(
     async (v: GameVerse) => {
-      const row = await upsertChallengeFromVerses([v]);
-      router.push({
-        pathname: "/practice-game",
-        params: {
-          session: "challenge",
-          ...(row ? { challengeId: row.id } : {}),
-          verseId: v.id,
-          verseIds: v.id,
-          currentIndex: "0",
-          rangeMode: "verse",
-          mode: "speech",
-        },
-      });
+      await openPracticeForVerses([v], "verse");
     },
-    [router]
+    [openPracticeForVerses]
   );
 
   const openVerseActionSheet = useCallback((v: GameVerse) => {
@@ -355,37 +328,14 @@ export default function AddToChallengesScreen() {
     setVerseActionTarget(null);
   }, []);
 
-  const addVerseToChallenges = useCallback(async (v: GameVerse) => {
-    await saveChallengeAsCustom({
-      startBook: v.book,
-      startChapter: v.chapter,
-      startVerse: v.verse,
-      endBook: v.book,
-      endChapter: v.chapter,
-      endVerse: v.verse,
-    });
-    setSavedChallengeVerseIds((prev) => new Set(prev).add(v.id));
-    setVerseSearchResults((prev) =>
-      prev.map((row) => (row.id === v.id ? { ...row, isFavorite: true } : row))
-    );
-  }, []);
-
   const onActionSheetPractice = useCallback(() => {
     const v = verseActionTarget;
     closeVerseActionSheet();
     if (v) void openPracticeForVerse(v);
   }, [verseActionTarget, closeVerseActionSheet, openPracticeForVerse]);
 
-  const onActionSheetAdd = useCallback(() => {
-    const v = verseActionTarget;
-    if (!v || savedChallengeVerseIds.has(v.id) || v.isFavorite) return;
-    closeVerseActionSheet();
-    void addVerseToChallenges(v);
-  }, [verseActionTarget, savedChallengeVerseIds, closeVerseActionSheet, addVerseToChallenges]);
-
   const isActionTargetSaved =
-    verseActionTarget != null &&
-    (savedChallengeVerseIds.has(verseActionTarget.id) || verseActionTarget.isFavorite);
+    verseActionTarget != null && savedChallengeVerseIds.has(verseActionTarget.id);
 
   const searchActive = selectedBook === null && verseSearch.trim().length >= 2;
 
@@ -469,15 +419,11 @@ export default function AddToChallengesScreen() {
                     >
                       <Text style={styles.searchActionText}>Practice</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.searchActionBtn, item.isFavorite && styles.searchActionBtnDone]}
-                      onPress={() => void addVerseToChallenges(item)}
-                      disabled={item.isFavorite}
-                      accessibilityRole="button"
-                      accessibilityLabel={item.isFavorite ? "Already in challenges" : `Add ${item.reference}`}
-                    >
-                      <Text style={styles.searchActionText}>{item.isFavorite ? "Added" : "Add"}</Text>
-                    </TouchableOpacity>
+                    {savedChallengeVerseIds.has(item.id) ? (
+                      <View style={[styles.searchActionBtn, styles.searchActionBtnDone]}>
+                        <Text style={styles.searchActionText}>Practiced</Text>
+                      </View>
+                    ) : null}
                   </View>
                 </View>
               )}
@@ -601,9 +547,9 @@ export default function AddToChallengesScreen() {
                 </View>
               ) : (
                 <View style={styles.chapterActions}>
-                  <TouchableOpacity style={styles.addChapterBtn} onPress={onAddEntireChapter}>
-                    <Ionicons name="add-circle" size={22} color={colors.primary} />
-                    <Text style={styles.addChapterText}>Add this chapter</Text>
+                  <TouchableOpacity style={styles.addChapterBtn} onPress={() => void onPracticeEntireChapter()}>
+                    <Ionicons name="mic-outline" size={22} color={colors.primary} />
+                    <Text style={styles.addChapterText}>Practice this chapter</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.selectRangeBtn}
@@ -667,17 +613,19 @@ export default function AddToChallengesScreen() {
                       </Pressable>
                     ) : (
                       <Pressable
-                        onPress={() => void onToggleVerse(v.id)}
+                        onPress={() => void openPracticeForVerse(v)}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                         style={styles.favBtn}
                         accessibilityRole="button"
                         accessibilityLabel={
-                          saved ? `Remove ${v.reference} from challenges` : `Add ${v.reference}`
+                          saved
+                            ? `Practice ${v.reference} again (in My Challenges)`
+                            : `Practice ${v.reference}`
                         }
                       >
                         <Ionicons
-                          name={saved ? "heart" : "heart-outline"}
-                          size={26}
+                          name={saved ? "heart" : "mic-outline"}
+                          size={saved ? 26 : 24}
                           color={saved ? colors.primary : colors.textMuted}
                         />
                       </Pressable>
@@ -693,15 +641,15 @@ export default function AddToChallengesScreen() {
                       styles.rangeCta,
                       { opacity: savingRange || pressed ? 0.85 : 1 },
                     ]}
-                    onPress={() => void onAddRange()}
+                    onPress={() => void onPracticeRange()}
                     disabled={savingRange}
                     accessibilityRole="button"
-                    accessibilityLabel="Add this passage"
+                    accessibilityLabel="Practice this passage"
                   >
                     {savingRange ? (
                       <ActivityIndicator color={colors.primaryText} />
                     ) : (
-                      <Text style={styles.rangeCtaText}>Add this passage</Text>
+                      <Text style={styles.rangeCtaText}>Practice this passage</Text>
                     )}
                   </Pressable>
                 </View>
@@ -734,30 +682,11 @@ export default function AddToChallengesScreen() {
                   <Ionicons name="mic-outline" size={20} color={colors.primaryText} />
                   <Text style={[styles.actionSheetBtnText, { color: colors.primaryText }]}>Practice</Text>
                 </Pressable>
-                <Pressable
-                  style={[
-                    styles.actionSheetBtn,
-                    styles.actionSheetBtnSecondary,
-                    {
-                      backgroundColor: colors.surface,
-                      borderColor: colors.surfaceBorder,
-                      opacity: isActionTargetSaved ? 0.5 : 1,
-                    },
-                  ]}
-                  onPress={onActionSheetAdd}
-                  disabled={isActionTargetSaved}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    isActionTargetSaved
-                      ? "Already in My Challenges"
-                      : `Add ${verseActionTarget.reference} to My Challenges`
-                  }
-                >
-                  <Ionicons name="heart-outline" size={20} color={colors.primary} />
-                  <Text style={[styles.actionSheetBtnText, { color: colors.primary }]}>
-                    {isActionTargetSaved ? "In My Challenges" : "Add to My Challenges"}
+                {isActionTargetSaved ? (
+                  <Text style={[styles.actionSheetPreview, { color: colors.textMuted, marginBottom: 4 }]}>
+                    Already in My Challenges after you practiced it.
                   </Text>
-                </Pressable>
+                ) : null}
                 <Pressable
                   style={styles.actionSheetCancel}
                   onPress={closeVerseActionSheet}

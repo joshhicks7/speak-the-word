@@ -24,7 +24,6 @@ import {
   deleteChallenge,
   isChallengeCompleted,
   loadStoredChallenges,
-  setChallengeKind,
   upsertChallengeForBounds,
   type StoredChallenge,
 } from "../../database/challenges";
@@ -59,7 +58,6 @@ export default function PracticeScreen() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [completionFilter, setCompletionFilter] = useState<CompletionFilter>("all");
-  const [hideStarterDefaults, setHideStarterDefaults] = useState(false);
   const [filterSheetVisible, setFilterSheetVisible] = useState(false);
   const [openingStarter, setOpeningStarter] = useState(false);
   const [practiceVoiceListen, setPracticeVoiceListen] = useState(false);
@@ -171,18 +169,14 @@ export default function PracticeScreen() {
           Alert.alert("Verse unavailable", "We couldn't open that verse. Try adding one instead.");
           return;
         }
-        const row = await upsertChallengeForBounds(
-          {
-            startBook: found.book,
-            startChapter: found.chapter,
-            startVerse: found.verse,
-            endBook: found.book,
-            endChapter: found.chapter,
-            endVerse: found.verse,
-          },
-          { kind: "custom" }
-        );
-        await setChallengeKind(row.id, "custom");
+        const row = await upsertChallengeForBounds({
+          startBook: found.book,
+          startChapter: found.chapter,
+          startVerse: found.verse,
+          endBook: found.book,
+          endChapter: found.chapter,
+          endVerse: found.verse,
+        });
         router.push({
           pathname: "/practice-game",
           params: {
@@ -216,13 +210,8 @@ export default function PracticeScreen() {
     } else if (completionFilter === "not_completed") {
       list = list.filter((stored) => !isChallengeCompleted(stored));
     }
-    if (hideStarterDefaults) {
-      list = list.filter(
-        (stored) => stored.kind === "custom" || stored.lastAttemptedAt != null
-      );
-    }
     return list;
-  }, [challenges, searchQuery, completionFilter, hideStarterDefaults]);
+  }, [challenges, searchQuery, completionFilter]);
 
   const handlePracticeVoice = useCallback(
     async (text: string) => {
@@ -238,19 +227,6 @@ export default function PracticeScreen() {
         stopSpeak,
         setListening: setPracticeVoiceListen,
         practiceAsChallenge: true,
-        onAddToChallenges: async (verse, verseIds) => {
-          const { upsertChallengeFromVerses, setChallengeKind } = await import(
-            "../../database/challenges"
-          );
-          const { getVerseById } = await import("../../database/queries");
-          const ids = verseIds?.length ? verseIds : [verse.id];
-          const verses = (await Promise.all(ids.map((id) => getVerseById(id)))).filter(
-            (v): v is GameVerse => v != null
-          );
-          const row = await upsertChallengeFromVerses(verses);
-          if (row) await setChallengeKind(row.id, "custom");
-          await load({ silent: true });
-        },
         onHandsFreeOff: async () => {
           await setEnabled(false);
         },
@@ -323,7 +299,7 @@ export default function PracticeScreen() {
                 styles.filterBtn,
                 {
                   backgroundColor:
-                    completionFilter !== "all" || hideStarterDefaults ? colors.primary + "20" : colors.surface,
+                    completionFilter !== "all" ? colors.primary + "20" : colors.surface,
                   borderColor: colors.surfaceBorder,
                 },
               ]}
@@ -332,7 +308,7 @@ export default function PracticeScreen() {
               <Ionicons
                 name="filter"
                 size={22}
-                color={completionFilter !== "all" || hideStarterDefaults ? colors.primary : colors.textMuted}
+                color={completionFilter !== "all" ? colors.primary : colors.textMuted}
               />
             </TouchableOpacity>
           </View>
@@ -356,18 +332,6 @@ export default function PracticeScreen() {
                 {completionFilter === opt && <Ionicons name="checkmark" size={20} color={colors.primary} />}
               </TouchableOpacity>
             ))}
-            <Text style={[styles.sheetSectionLabel, { color: colors.textMuted, marginTop: 12 }]}>
-              Default challenges
-            </Text>
-            <TouchableOpacity
-              style={[styles.sheetOption, hideStarterDefaults && { backgroundColor: colors.primary + "18" }]}
-              onPress={() => setHideStarterDefaults((v) => !v)}
-            >
-              <Text style={[styles.sheetOptionText, { color: colors.text, flex: 1 }]}>
-                Hide default challenges
-              </Text>
-              {hideStarterDefaults ? <Ionicons name="checkmark" size={20} color={colors.primary} /> : null}
-            </TouchableOpacity>
             <TouchableOpacity
               style={[styles.sheetDoneBtn, { backgroundColor: colors.primary }]}
               onPress={() => setFilterSheetVisible(false)}
@@ -383,7 +347,9 @@ export default function PracticeScreen() {
             <Ionicons name="heart" size={22} color={colors.primary} />
           </View>
           <Text style={styles.emptyText}>Start with a verse about Jesus</Text>
-          <Text style={styles.emptyHint}>Pick one to speak, or add any verse you want.</Text>
+          <Text style={styles.emptyHint}>
+            Practice a verse and it will show here. You can also add any passage from the plus button.
+          </Text>
           <View style={styles.starterList}>
             {JESUS_STARTERS.map((starter) => (
               <Pressable

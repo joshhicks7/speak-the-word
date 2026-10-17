@@ -126,18 +126,6 @@ export default function LevelsScreen() {
         stopSpeak,
         setListening: setLevelsVoiceListen,
         practiceAsChallenge: false,
-        onAddToChallenges: async (v, verseIds) => {
-          const { upsertChallengeFromVerses, setChallengeKind } = await import(
-            "../../database/challenges"
-          );
-          const { getVerseById } = await import("../../database/queries");
-          const ids = verseIds?.length ? verseIds : [v.id];
-          const verses = (await Promise.all(ids.map((id) => getVerseById(id)))).filter(
-            (x): x is NonNullable<typeof x> => x != null
-          );
-          const row = await upsertChallengeFromVerses(verses);
-          if (row) await setChallengeKind(row.id, "custom");
-        },
         onHandsFreeOff: async () => {
           await setEnabled(false);
         },

@@ -34,11 +34,11 @@ import {
   type RecordUserActionInput,
 } from "../database/queries";
 import {
+  deleteChallenge,
   getChallengeById,
   getNextIncompleteChallenge,
   loadVersesForChallenge,
   recordChallengeAttempt,
-  setChallengeKind,
   type ChallengeRow,
 } from "../database/challenges";
 import { CoachBanner } from "../components/CoachBanner";
@@ -521,14 +521,13 @@ export default function PracticeGameScreen() {
     setSelectedRangeIndex(null);
   }, [rangeVerses, buildCombinedVerse]);
 
-  const handleToggleFavorite = useCallback(async () => {
+  const handleRemoveFromMyChallenges = useCallback(async () => {
     if (!isChallengeSession || !challengeId) return;
     const row = challengeRow ?? (await getChallengeById(challengeId));
-    if (!row) return;
-    const nextKind = row.kind === "custom" ? "default" : "custom";
-    await setChallengeKind(challengeId, nextKind);
-    setChallengeRow({ ...row, kind: nextKind });
-  }, [isChallengeSession, challengeId, challengeRow]);
+    if (!row?.lastAttemptedAt) return;
+    await deleteChallenge(challengeId);
+    exitPractice();
+  }, [isChallengeSession, challengeId, challengeRow, exitPractice]);
 
   const handleNext = useCallback(async () => {
     setStreakCongrats(null);
@@ -869,8 +868,8 @@ export default function PracticeGameScreen() {
 
   const passedThisRound = score !== null && score.percent >= passPercent;
   const showConfetti = phase === "result" && passedThisRound;
-  const isFavorited = isChallengeSession && challengeRow?.kind === "custom";
-  const showChallengeFavorite = isChallengeSession && !!challengeId;
+  const isInMyChallenges = isChallengeSession && challengeRow?.lastAttemptedAt != null;
+  const showChallengeFavorite = isInMyChallenges;
 
   return (
     <KeyboardAvoidingView
@@ -891,17 +890,13 @@ export default function PracticeGameScreen() {
           <Text style={[styles.ref, styles.refInRow, { color: colors.primary }]}>{verse.reference}</Text>
           {showChallengeFavorite ? (
             <Pressable
-              onPress={() => void handleToggleFavorite()}
+              onPress={() => void handleRemoveFromMyChallenges()}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
               style={styles.favoriteBtn}
               accessibilityRole="button"
-              accessibilityLabel={isFavorited ? "Remove from My Challenges" : "Save to My Challenges"}
+              accessibilityLabel="Remove from My Challenges"
             >
-              <Ionicons
-                name={isFavorited ? "heart" : "heart-outline"}
-                size={28}
-                color={isFavorited ? colors.primary : colors.textMuted}
-              />
+              <Ionicons name="heart" size={28} color={colors.primary} />
             </Pressable>
           ) : null}
         </View>
