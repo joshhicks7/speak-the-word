@@ -1076,9 +1076,14 @@ export default function PracticeGameScreen() {
             onRestart={resetToMemorize}
             colors={colors}
             autoStart={
-              !isWelcomeDemo && voicePrefs.autoSubmitOnSilence && reciteListeningReady
+              handsFree &&
+              !isWelcomeDemo &&
+              voicePrefs.autoSubmitOnSilence &&
+              reciteListeningReady
             }
-            smartMic={isWelcomeDemo ? false : voicePrefs.autoSubmitOnSilence}
+            smartMic={
+              isWelcomeDemo ? false : handsFree && voicePrefs.autoSubmitOnSilence
+            }
             minimalUI={handsFree && !isWelcomeDemo}
             silenceTimeoutMs={voicePrefs.silenceTimeoutMs}
             maxListenMs={voicePrefs.maxListenMs}
@@ -1382,7 +1387,9 @@ function ReciteComposerWithSpeech({
       if (bailOutIfRestartPhrase(spoken)) return;
       if (bailOutIfExitPhrase(spoken)) return;
     } else {
-      setTranscript(current ? current + " " + text : text);
+      const merged = (current ? `${current} ${text}` : text).trim();
+      transcriptRef.current = merged;
+      setTranscript(merged);
     }
   });
 
