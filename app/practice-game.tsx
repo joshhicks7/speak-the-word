@@ -113,8 +113,16 @@ export default function PracticeGameScreen() {
   const isIntro = source === "intro";
   const isWelcomeDemo = source === "welcome-demo";
   const passPercent = isIntro || isWelcomeDemo ? 75 : 80;
-  const { prefs: voicePrefs, speak, playCue, stopSpeak, getSpeechGeneration, speechActive, setEnabled } =
-    useAppVoice();
+  const {
+    prefs: voicePrefs,
+    refreshPrefs,
+    speak,
+    playCue,
+    stopSpeak,
+    getSpeechGeneration,
+    speechActive,
+    setEnabled,
+  } = useAppVoice();
   const handsFree = voicePrefs.handsFreeEnabled && speechWrapper.available;
   const colors = useThemeColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
@@ -142,6 +150,7 @@ export default function PracticeGameScreen() {
   const [reciteUseType, setReciteUseType] = useState(navigationMode === "type");
   const [reciteSession, setReciteSession] = useState(0);
   const handsFreeFlowStarted = useRef(false);
+  const voicePrefsSignatureRef = useRef("");
   const startTime = useRef<number>(0);
   const contentOpacity = useRef(new Animated.Value(1)).current;
   const resultScale = useRef(new Animated.Value(0.85)).current;
@@ -371,12 +380,35 @@ export default function PracticeGameScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      void refreshPrefs();
       return () => {
         stopSpeak();
         setCommandListen(false);
       };
-    }, [stopSpeak])
+    }, [stopSpeak, refreshPrefs])
   );
+
+  useEffect(() => {
+    const signature = [
+      voicePrefs.handsFreeEnabled,
+      voicePrefs.autoSubmitOnSilence,
+      voicePrefs.micStartMode,
+      voicePrefs.readFullVerse,
+      voicePrefs.autoCueType,
+    ].join("|");
+    if (voicePrefsSignatureRef.current && voicePrefsSignatureRef.current !== signature) {
+      handsFreeFlowStarted.current = false;
+      setCommandListen(false);
+      setReciteSession((s) => s + 1);
+    }
+    voicePrefsSignatureRef.current = signature;
+  }, [
+    voicePrefs.handsFreeEnabled,
+    voicePrefs.autoSubmitOnSilence,
+    voicePrefs.micStartMode,
+    voicePrefs.readFullVerse,
+    voicePrefs.autoCueType,
+  ]);
 
   const speakPassagePreview = useCallback(
     async (runGen: number) => {
@@ -1076,9 +1108,14 @@ export default function PracticeGameScreen() {
             onRestart={resetToMemorize}
             colors={colors}
             autoStart={
-              !isWelcomeDemo && voicePrefs.autoSubmitOnSilence && reciteListeningReady
+              handsFree &&
+              !isWelcomeDemo &&
+              voicePrefs.autoSubmitOnSilence &&
+              reciteListeningReady
             }
-            smartMic={isWelcomeDemo ? false : voicePrefs.autoSubmitOnSilence}
+            smartMic={
+              isWelcomeDemo ? false : handsFree && voicePrefs.autoSubmitOnSilence
+            }
             minimalUI={handsFree && !isWelcomeDemo}
             silenceTimeoutMs={voicePrefs.silenceTimeoutMs}
             maxListenMs={voicePrefs.maxListenMs}
@@ -1382,7 +1419,9 @@ function ReciteComposerWithSpeech({
       if (bailOutIfRestartPhrase(spoken)) return;
       if (bailOutIfExitPhrase(spoken)) return;
     } else {
-      setTranscript(current ? current + " " + text : text);
+      const merged = (current ? `${current} ${text}` : text).trim();
+      transcriptRef.current = merged;
+      setTranscript(merged);
     }
   });
 
@@ -1481,6 +1520,17 @@ function ReciteComposerWithSpeech({
       }
     };
   }, [ExpoSpeechRecognitionModule]);
+
+  useEffect(() => {
+    autoStarted.current = false;
+    pulseActive.current = false;
+    setListening(false);
+    try {
+      ExpoSpeechRecognitionModule.stop();
+    } catch {
+      // ignore
+    }
+  }, [autoStart, smartMic, ExpoSpeechRecognitionModule]);
 
   useEffect(() => {
     if (!autoStart || autoStarted.current) return;

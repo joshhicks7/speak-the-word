@@ -43,7 +43,7 @@ export default function HomeScreen() {
   const [pendingVerse, setPendingVerse] = useState<GameVerse | null>(null);
   const [pendingPracticeVerseIds, setPendingPracticeVerseIds] = useState<string[] | null>(null);
   const [bibleBooks, setBibleBooks] = useState<BibleBook[]>([]);
-  const { prefs, setEnabled, speak, stopSpeak, speechActive } = useAppVoice();
+  const { prefs, refreshPrefs, setEnabled, speak, stopSpeak, speechActive } = useAppVoice();
   const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
 
   const announceHome = useCallback(
@@ -100,6 +100,7 @@ export default function HomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      void refreshPrefs();
       load();
       return () => {
         stopSpeak();
@@ -107,7 +108,7 @@ export default function HomeScreen() {
         setPendingVerse(null);
         setPendingPracticeVerseIds(null);
       };
-    }, [load, stopSpeak])
+    }, [load, stopSpeak, refreshPrefs])
   );
 
   const handleHomeVoice = useCallback(

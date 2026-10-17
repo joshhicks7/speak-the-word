@@ -67,7 +67,7 @@ export default function PracticeScreen() {
   const [pendingPracticeVerseIds, setPendingPracticeVerseIds] = useState<string[] | null>(null);
   const [bibleBooks, setBibleBooks] = useState<BibleBook[]>([]);
   const hubIntroPending = useRef(true);
-  const { prefs, speak, stopSpeak, speechActive, setEnabled } = useAppVoice();
+  const { prefs, refreshPrefs, speak, stopSpeak, speechActive, setEnabled } = useAppVoice();
   const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
 
   useEffect(() => {
@@ -119,6 +119,7 @@ export default function PracticeScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      void refreshPrefs();
       hubIntroPending.current = true;
       setPendingVerse(null);
       setPendingPracticeVerseIds(null);
@@ -129,7 +130,7 @@ export default function PracticeScreen() {
         setPendingVerse(null);
         setPendingPracticeVerseIds(null);
       };
-    }, [load, stopSpeak])
+    }, [load, stopSpeak, refreshPrefs])
   );
 
   useEffect(() => {
