@@ -59,7 +59,11 @@ import {
   parseVoiceCommand,
   type VoiceIntent,
 } from "../lib/voiceCommands";
-import { shouldAutoSubmit, DEFAULT_RECITE_LISTENING_CONFIG } from "../lib/reciteListening";
+import {
+  shouldAutoSubmit,
+  DEFAULT_RECITE_LISTENING_CONFIG,
+  mergeSttHypothesis,
+} from "../lib/reciteListening";
 import { buildVerseContextualStrings } from "../lib/verseContextualStrings";
 import { computeAccuracy, type AccuracyResult } from "../utils/accuracy";
 import { setWelcomeComplete } from "../utils/onboarding";
@@ -1406,22 +1410,15 @@ function ReciteComposerWithSpeech({
     if (!text) return;
 
     const current = transcriptRef.current.trim();
+    const merged = mergeSttHypothesis(current, text);
+    transcriptRef.current = merged;
+    setTranscript(merged);
     if (event.isFinal) {
       hasFinalChunk.current = true;
       lastFinalAt.current = Date.now();
-      if (current.length === 0 || text.toLowerCase().startsWith(current.toLowerCase())) {
-        transcriptRef.current = text;
-      } else {
-        transcriptRef.current = (current + " " + text).trim();
-      }
-      setTranscript(transcriptRef.current);
-      const spoken = transcriptRef.current.trim();
+      const spoken = merged.trim();
       if (bailOutIfRestartPhrase(spoken)) return;
       if (bailOutIfExitPhrase(spoken)) return;
-    } else {
-      const merged = (current ? `${current} ${text}` : text).trim();
-      transcriptRef.current = merged;
-      setTranscript(merged);
     }
   });
 
