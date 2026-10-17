@@ -35,7 +35,7 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const colors = useThemeColors();
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const { prefs, setEnabled, updatePrefs } = useAppVoice();
+  const { prefs, refreshPrefs, setEnabled, updatePrefs } = useAppVoice();
   const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
   const [openCommandSections, setOpenCommandSections] = useState<Record<string, boolean>>({});
   const [ttsVoices, setTtsVoices] = useState<Awaited<ReturnType<typeof loadAvailableVoices>>>([]);
@@ -44,8 +44,9 @@ export default function SettingsScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      void refreshPrefs();
       void loadAvailableVoices().then(setTtsVoices);
-    }, [])
+    }, [refreshPrefs])
   );
 
   const ttsVoiceOptions = useMemo(() => {

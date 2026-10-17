@@ -47,7 +47,7 @@ export default function LevelsScreen() {
   const [pendingVerse, setPendingVerse] = useState<GameVerse | null>(null);
   const [pendingPracticeVerseIds, setPendingPracticeVerseIds] = useState<string[] | null>(null);
   const [bibleBooks, setBibleBooks] = useState<BibleBook[]>([]);
-  const { prefs, speak, stopSpeak, setEnabled, speechActive } = useAppVoice();
+  const { prefs, refreshPrefs, speak, stopSpeak, setEnabled, speechActive } = useAppVoice();
   const handsFree = prefs.handsFreeEnabled && speechWrapper.available;
 
   const announceLevels = useCallback(
@@ -92,6 +92,7 @@ export default function LevelsScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      void refreshPrefs();
       load();
       return () => {
         stopSpeak();
@@ -99,7 +100,7 @@ export default function LevelsScreen() {
         setPendingVerse(null);
         setPendingPracticeVerseIds(null);
       };
-    }, [load, stopSpeak])
+    }, [load, stopSpeak, refreshPrefs])
   );
 
   const openVerse = useCallback(

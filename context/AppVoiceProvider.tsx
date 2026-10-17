@@ -22,6 +22,8 @@ import {
 
 type AppVoiceContextValue = {
   prefs: HandsFreePreferences;
+  /** Increments whenever prefs are reloaded from storage (toggle in Settings, focus refresh). */
+  prefsRevision: number;
   refreshPrefs: () => Promise<void>;
   setEnabled: (enabled: boolean) => Promise<void>;
   updatePrefs: (partial: Partial<HandsFreePreferences>) => Promise<void>;
@@ -39,6 +41,7 @@ export function AppVoiceProvider({ children }: { children: ReactNode }) {
   const [speechActive, setSpeechActive] = useState(false);
   const speechGenerationRef = useRef(0);
 
+  const [prefsRevision, setPrefsRevision] = useState(0);
   const [prefs, setPrefs] = useState<HandsFreePreferences>({
     handsFreeEnabled: false,
     micStartMode: "autoCue",
@@ -56,6 +59,7 @@ export function AppVoiceProvider({ children }: { children: ReactNode }) {
   const refreshPrefs = useCallback(async () => {
     const next = await getHandsFreePreferences();
     setPrefs(next);
+    setPrefsRevision((r) => r + 1);
   }, []);
 
   useEffect(() => {
@@ -122,6 +126,7 @@ export function AppVoiceProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       prefs,
+      prefsRevision,
       refreshPrefs,
       setEnabled,
       updatePrefs,
@@ -131,7 +136,18 @@ export function AppVoiceProvider({ children }: { children: ReactNode }) {
       speechActive,
       getSpeechGeneration,
     }),
-    [prefs, refreshPrefs, setEnabled, updatePrefs, speak, stopSpeak, playCue, speechActive, getSpeechGeneration]
+    [
+      prefs,
+      prefsRevision,
+      refreshPrefs,
+      setEnabled,
+      updatePrefs,
+      speak,
+      stopSpeak,
+      playCue,
+      speechActive,
+      getSpeechGeneration,
+    ]
   );
 
   return (
